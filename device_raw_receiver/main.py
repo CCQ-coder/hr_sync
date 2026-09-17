@@ -19,16 +19,40 @@ from .logging_setup import configure_application_logger
 from .server import RawTcpServer
 
 
+class _WindowSafeArgumentParser(argparse.ArgumentParser):
+    """Avoid argparse writing to absent streams in a windowed executable."""
+
+    def error(self, message: str) -> None:
+        raise ConfigError("命令行参数错误: {0}".format(message))
+
+    def _print_message(self, message: Optional[str], file=None) -> None:
+        if not message:
+            return
+        output = file if file is not None else getattr(sys, "stdout", None)
+        if output is None or not hasattr(output, "write"):
+            return
+        try:
+            output.write(message)
+        except (OSError, ValueError):
+            return
+
+
 def run(argv: Optional[Sequence[str]] = None) -> int:
     """Validate configuration and run until the process receives a stop signal."""
-    parser = argparse.ArgumentParser(description="局域网设备原始 TCP 数据接收服务")
-    parser.add_argument("--config", required=True, type=Path, help="接收器 JSON 配置文件的绝对路径")
-    arguments = parser.parse_args(argv)
+    application_directory = _application_directory()
+    parser = _WindowSafeArgumentParser(description="局域网设备原始 TCP 数据接收服务")
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=application_directory / "device_receiver_config.json",
+        help="接收器 JSON 配置文件路径；默认为程序同目录的 device_receiver_config.json",
+    )
     try:
+        arguments = parser.parse_args(argv)
         config = load_config(arguments.config)
         _validate_storage(config)
     except ConfigError as error:
-        print("配置错误: {0}".format(error), file=sys.stderr)
+        _report_startup_error("配置错误: {0}".format(error), application_directory)
         return 2
 
     logger = configure_application_logger(config.storage_root)
@@ -41,6 +65,29 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
         logger.exception("接收服务启动或运行失败")
         return 1
     return 0
+
+
+def _application_directory() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parents[1]
+
+
+def _report_startup_error(message: str, application_directory: Path) -> None:
+    output = getattr(sys, "stderr", None)
+    if output is not None and hasattr(output, "write"):
+        try:
+            output.write(message + "\n")
+            output.flush()
+            return
+        except (OSError, ValueError):
+            pass
+
+    try:
+        with (application_directory / "startup-error.log").open("a", encoding="utf-8") as error_log:
+            error_log.write(message + "\n")
+    except OSError:
+        pass
 
 
 async def _serve(config: ReceiverConfig, logger: logging.Logger) -> None:

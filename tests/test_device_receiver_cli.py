@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 import io
 import subprocess
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr
 from pathlib import Path
+from unittest.mock import patch
 
 try:
     from device_raw_receiver.main import run
@@ -66,6 +68,24 @@ class ReceiverCliTests(unittest.TestCase):
             result = run(["--config", str(self.package_directory / "missing.json")])
         self.assertEqual(2, result)
         self.assertIn("配置错误", stderr.getvalue())
+
+    def test_windowed_start_without_arguments_reports_missing_neighbor_config(self) -> None:
+        self.require_main_module()
+        executable_path = self.package_directory / "DeviceRawReceiver.exe"
+        executable_path.write_bytes(b"placeholder")
+
+        with patch.object(sys, "frozen", True, create=True):
+            with patch.object(sys, "executable", str(executable_path)):
+                with patch.object(sys, "stderr", None):
+                    try:
+                        result = run([])
+                    except AttributeError as error:
+                        self.fail(f"窗口版启动不应因无控制台输出流崩溃: {error}")
+
+        self.assertEqual(2, result)
+        startup_error_log = self.package_directory / "startup-error.log"
+        self.assertTrue(startup_error_log.is_file())
+        self.assertIn("device_receiver_config.json", startup_error_log.read_text(encoding="utf-8"))
 
     def test_installer_whatif_validates_package_without_creating_task(self) -> None:
         self.require_main_module()

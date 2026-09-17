@@ -16,6 +16,8 @@ New-NetFirewallRule -DisplayName "DeviceRawReceiver TCP 9100" -Direction Inbound
 
 计划任务以 `SYSTEM` 账户在开机后运行。安装前确认该账户可创建 `storage_root` 中的目录和文件。
 
+不带参数启动（包括双击 EXE）时，程序默认读取 EXE 同目录的 `device_receiver_config.json`。如果配置缺失或无效，程序不会开始监听，并在同目录追加 `startup-error.log` 以便排查。
+
 ## 原始数据目录
 
 每条连接创建一个目录：
