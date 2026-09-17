@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 .venv/
 .tools/
+.worktrees/
 
 # Generated build, release, log, and raw-data directories
 build/
