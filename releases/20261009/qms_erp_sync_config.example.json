@@ -1,0 +1,17 @@
+{
+  "source_directory": "D:\\ERP-BI数据源",
+  "source_file_keyword": "生产指示资料",
+  "sync_mode": "database",
+  "database_host": "127.0.0.1",
+  "database_port": "3306",
+  "database_name": "qms",
+  "database_username": "<填写 QMS 应用账号>",
+  "database_password": "<填写数据库密码>",
+  "qms_base_url": "http://localhost:8080",
+  "tenant_code": "customer-b",
+  "gateway_token": "",
+  "deactivate_missing": false,
+  "request_timeout_seconds": 30,
+  "auto_sync_enabled": false,
+  "auto_sync_interval_minutes": 5
+}
