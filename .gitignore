@@ -1,0 +1,29 @@
+# Python bytecode and local environments
+__pycache__/
+*.py[cod]
+.venv/
+.tools/
+.worktrees/
+
+# Generated build, release, log, and raw-data directories
+build/
+dist/
+logs/
+outputs/
+BI数据源/
+zsh-数据源/
+device_raw_receiver_data/
+
+# Deployment-only state and credentials
+qms_erp_sync_config.json
+qms_erp_sync_state.json
+device_receiver_config.json
+ini_share_sync/sync_config.json
+ini_share_sync/sync_state.json
+ini_share_sync/logs/
+ini_share_sync/build/
+ini_share_sync/dist/
+ini_share_sync/build-win32/
+ini_share_sync/dist-win32/
+ini_share_sync/build-xp32/
+ini_share_sync/dist-xp32/
