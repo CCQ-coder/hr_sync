@@ -1,0 +1,10 @@
+xlrd==2.0.1
+openpyxl==3.1.5
+# Pure-Python MySQL driver; compatible with the CPython 3.8 runtime used to
+# build the Windows executable.
+PyMySQL==1.1.1
+# Required by PyMySQL when the server account uses sha256_password or
+# caching_sha2_password (the default in modern MySQL installations).
+cryptography==42.0.8
+pyinstaller==6.16.0
+# The raw TCP receiver uses only Python's standard library at runtime.

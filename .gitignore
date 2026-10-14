@@ -2,6 +2,8 @@
 __pycache__/
 *.py[cod]
 .venv/
+.tools/
+.worktrees/
 
 # Generated build, release, log, and raw-data directories
 build/
@@ -9,6 +11,7 @@ dist/
 logs/
 outputs/
 BI数据源/
+zsh-数据源/
 device_raw_receiver_data/
 
 # Deployment-only state and credentials

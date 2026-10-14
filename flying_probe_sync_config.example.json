@@ -1,0 +1,9 @@
+{
+  "database_host": "127.0.0.1",
+  "database_port": "3306",
+  "database_name": "qms",
+  "database_username": "<填写 QMS 应用账号>",
+  "database_password": "<填写数据库密码>",
+  "tenant_code": "customer-b",
+  "request_timeout_seconds": 30
+}

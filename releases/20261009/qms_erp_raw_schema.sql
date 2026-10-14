@@ -1,0 +1,33 @@
+-- ERP BI 固定业务表说明
+--
+-- 同步工具会按业务类型自动创建固定表名，并在每张表中保留
+-- source_file、sheet_name、source_row_no 和每个 Excel 列对应的
+-- erp_<english_snake_case> 实体字段等来源信息。每个动态字段的
+-- MySQL COMMENT 保存原始中文列名（例如：Excel列名：采购单号）。
+-- 字段名由 erp_field_registry.json 审核并固定；发现新的 Excel 列时，
+-- 请先更新并审核注册表，不会自动创建 erp_中文字段。新数据不会写入 row_data_json：
+--
+-- qms_customer_order               客户订单资料
+-- qms_customer_part                客户料号资料
+-- qms_engineering_data             工程资料资料
+-- qms_purchase_order               采购订单资料
+-- qms_material                     原料资料明细
+-- qms_material_receipt             原料入库单资料
+-- qms_material_issue               原料出库单资料、补料资料
+-- qms_finished_goods_receipt       成品入库单资料
+-- qms_delivery_note                送货单资料
+-- qms_process_output_summary       各工段出数汇总资料
+--
+-- 生产指示资料直接写入 qms_work_order 和 qms_production_batch。
+-- 未识别的新 Excel 文件才会写入 qms_erp_unclassified。
+--
+-- 请授予同步数据库账号在目标 MySQL 数据库中 CREATE TABLE、CREATE INDEX、ALTER、
+-- INSERT、UPDATE、SELECT 权限，然后从工具运行同步。工具会创建 InnoDB / utf8mb4
+-- 业务表；qms_work_order 和 qms_production_batch 需由 QMS 的 MySQL 迁移预先创建。
+--
+-- 已存在 erp_中文字段的数据库请先由 DBA 执行随 EXE 附带的迁移脚本：
+-- 停止同步、备份、erp_field_rename_preflight.sql、erp_field_rename_apply.sql、
+-- erp_field_rename_verify.sql；仅在验证无误后，才可选择执行
+-- erp_field_rename_contract.sql 清理共享旧字段。上述 SQL 不会由 EXE 自动执行。
+
+SELECT '请使用 QMS-ERP 数据同步工具自动创建固定业务表。' AS message;

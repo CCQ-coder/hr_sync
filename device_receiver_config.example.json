@@ -1,0 +1,12 @@
+{
+  "listen_host": "0.0.0.0",
+  "tcp_port": 9100,
+  "storage_root": "D:\\DeviceRawReceiverData",
+  "allowed_networks": ["192.168.10.0/24"],
+  "segment_max_bytes": 67108864,
+  "read_buffer_bytes": 65536,
+  "idle_timeout_seconds": 0,
+  "fsync_policy": "always",
+  "max_connections": 16,
+  "minimum_free_bytes": 1073741824
+}
