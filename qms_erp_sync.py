@@ -75,8 +75,8 @@ BUSINESS_SOURCE_TABLES = frozenset(
 DEFAULT_CONFIG: Dict[str, Any] = {
     # source_directory is retained as a read-only compatibility alias for
     # configurations created by older releases.
-    "source_directory": str(Path(__file__).resolve().parent / "BI数据源"),
-    "initialization_directory": str(Path(__file__).resolve().parent / "BI数据源"),
+    "source_directory": str(Path(__file__).resolve().parent / "data" / "BI数据源"),
+    "initialization_directory": str(Path(__file__).resolve().parent / "data" / "BI数据源"),
     "incremental_directory": "",
     "skip_initialization": False,
     "source_file_keyword": "生产指示资料",
@@ -467,8 +467,8 @@ def load_config() -> Dict[str, Any]:
     # one level above it when the EXE is kept in a conventional dist folder).
     if getattr(sys, "frozen", False) and not path.exists():
         executable_directory = app_directory()
-        nearby = executable_directory / "BI数据源"
-        parent_nearby = executable_directory.parent / "BI数据源"
+        nearby = executable_directory / "data" / "BI数据源"
+        parent_nearby = executable_directory.parent / "data" / "BI数据源"
         initial_directory = str(nearby if nearby.is_dir() or not parent_nearby.is_dir() else parent_nearby)
         config["source_directory"] = initial_directory
         config["initialization_directory"] = initial_directory
