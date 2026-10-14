@@ -26,7 +26,7 @@ from qms_erp_sync import (
 
 
 ROOT = Path(__file__).resolve().parent
-SOURCE_DIRECTORY = ROOT / "BI数据源"
+SOURCE_DIRECTORY = ROOT / "data" / "BI数据源"
 OUTPUT = ROOT / "outputs" / "excel_database_field_mapping_data.json"
 EXCEL_SUFFIXES = (".xls", ".xlsx")
 

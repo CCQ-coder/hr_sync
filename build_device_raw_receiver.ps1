@@ -43,7 +43,7 @@ $env:PYTHONUSERBASE = $pyInstallerHome
 Push-Location $projectRoot
 try {
     & $PythonPath -m PyInstaller --noconfirm --clean --distpath $stagingPath --workpath $workPath `
-        (Join-Path $projectRoot "DeviceRawReceiver.spec")
+        (Join-Path $projectRoot "packaging\specs\DeviceRawReceiver.spec")
     if ($LASTEXITCODE -ne 0) {
         throw "PyInstaller 打包失败，退出码: $LASTEXITCODE"
     }
@@ -63,7 +63,7 @@ $sourceFiles = @{
     "device_receiver_config.example.json" = (Join-Path $projectRoot "device_receiver_config.example.json")
     "install_device_raw_receiver_task.ps1" = (Join-Path $projectRoot "install_device_raw_receiver_task.ps1")
     "remove_device_raw_receiver_task.ps1" = (Join-Path $projectRoot "remove_device_raw_receiver_task.ps1")
-    "README_device_raw_receiver.md" = (Join-Path $projectRoot "README_device_raw_receiver.md")
+    "README_device_raw_receiver.md" = (Join-Path $projectRoot "docs\guides\README_device_raw_receiver.md")
 }
 foreach ($name in $allowlist) {
     if (-not (Test-Path -LiteralPath $sourceFiles[$name] -PathType Leaf)) {

@@ -1,5 +1,25 @@
 # QMS ERP 数据同步工具
 
+## 客户分支
+
+- `zsh`：卓思涵的分支，用于卓思涵客户的开发和部署。
+- `gy`：共赢的分支，从 `main` 创建，用于共赢客户的开发和部署。
+- `main`：基础分支；客户专属变更应提交到对应的 `zsh` 或 `gy` 分支。
+
+两客户的真实配置、数据库连接、同步状态及源数据应分别维护，部署前确认所用分支和客户配置。
+
+## 文件布局
+
+- `qms_erp_sync.py`、`flying_probe_sync.py`、`run_device_raw_receiver.py`：运行入口。
+- `device_raw_receiver/`、`ini_share_sync/`：设备接收与共享同步模块。
+- `docs/guides/`：设备接收和飞针同步使用说明。文档中的命令均在项目根目录执行。
+- `packaging/specs/`：PyInstaller 规格文件；打包脚本保留在根目录，新生成的规格也写入此目录。
+- `sql/`：字段迁移 SQL 与 `bi_dashboard_queries.sql` 查询。
+- `tests/`：自动化测试；`releases/`：已发布版本。
+- `data/BI数据源/`、`data/zsh-数据源/`：两套本地 ERP 源数据，独立保存，不合并、不纳入 Git。已有部署配置如使用旧目录，请重新选择移动后的目录。
+
+根目录的配置模板、字段注册表和生成脚本保留原路径，以兼容运行时资源定位与现有测试。真实配置、同步状态和业务数据保留在本地，不纳入 Git。
+
 这是一个可双击运行的 Windows 工具。它会递归读取 ERP BI 目录内全部 `.xls` / `.xlsx` 文件及其全部工作表，将数据初始化或增量同步到 QMS 的 MySQL 数据库。
 
 默认使用 **MySQL 数据库直连**，不需要 QMS 网关 Token。同步采用 InnoDB 事务、`utf8mb4` 和 MySQL 幂等更新；保留来源文件、工作表、Excel 行号和数据指纹，便于追溯。
@@ -33,7 +53,7 @@
 1. 只分享或下载干净的 `dist\QMS-ERP数据同步工具-英文字段版-发布包` 目录；不要分享整个 `dist` 目录。
 2. 在目标服务器的受控本机目录中复制该发布包，再将 `qms_erp_sync_config.example.json` 复制并重命名为 `qms_erp_sync_config.json`。
 3. 仅在这个本机部署副本中填写 MySQL 主机、端口、库名、账号、密码和租户编码；界面不显示这些敏感配置。不要把实际配置文件放回、打包或分享给其它人。
-4. 打开 `QMS-ERP数据同步工具-英文字段版.exe`，分别选择初始化全量目录（例如 `D:\project\hr_sync\BI数据源`）和增量根目录（例如 `D:\项目文档\rpa华软ERP导出`）。
+4. 打开 `QMS-ERP数据同步工具-英文字段版.exe`，分别选择初始化全量目录（例如 `D:\project\hr_sync\data\BI数据源`）和增量根目录（例如 `D:\项目文档\rpa华软ERP导出`）。
 5. 点击“测试数据库连接”，确认无误后点击“开始同步”。
 
 数据库账号应使用 QMS 的 MySQL 应用账号，并至少具备固定业务表的 `SELECT`、`INSERT`、`UPDATE`、`CREATE TABLE`、`CREATE INDEX`、`ALTER TABLE` 权限。不要把 MySQL `root` 账号作为日常同步账号。
@@ -65,7 +85,7 @@
 
 ```json
 {
-  "initialization_directory": "D:\\project\\hr_sync\\BI数据源",
+  "initialization_directory": "D:\\project\\hr_sync\\data\\BI数据源",
   "incremental_directory": "D:\\项目文档\\rpa华软ERP导出",
   "skip_initialization": false,
   "auto_sync_enabled": true,

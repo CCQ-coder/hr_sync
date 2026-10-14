@@ -9,6 +9,7 @@ node_modules/
 迁移包/
 
 # Generated build, release, log, and raw-data directories
+data/
 build/
 dist/
 logs/

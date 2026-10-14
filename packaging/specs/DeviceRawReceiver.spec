@@ -1,8 +1,11 @@
 # -*- mode: python ; coding: utf-8 -*-
+from pathlib import Path
+
+project_root = Path(SPECPATH).resolve().parents[1]
 
 a = Analysis(
-    ["run_device_raw_receiver.py"],
-    pathex=[],
+    [str(project_root / "run_device_raw_receiver.py")],
+    pathex=[str(project_root)],
     binaries=[],
     datas=[],
     hiddenimports=[],

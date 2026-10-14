@@ -26,6 +26,7 @@ if ($LASTEXITCODE -ne 0) { throw '依赖安装失败。' }
 $arguments = @(
     '-m', 'PyInstaller', '--noconfirm', '--clean', '--onefile', '--windowed',
     '--name', $Name,
+    '--specpath', (Join-Path $Root 'packaging\specs'),
     '--add-data', ((Join-Path $Root 'erp_field_registry.json') + ';.'),
     '--collect-submodules', 'openpyxl',
     '--collect-all', 'cryptography',
