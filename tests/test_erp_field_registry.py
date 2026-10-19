@@ -4,7 +4,7 @@ import json
 import tempfile
 import unittest
 import importlib
-from dataclasses import FrozenInstanceError, replace
+from dataclasses import FrozenInstanceError, asdict, replace
 from pathlib import Path
 from decimal import Decimal
 from unittest.mock import patch, Mock
@@ -18,10 +18,90 @@ REGISTRY_PATH = Path(__file__).resolve().parents[1] / "erp_field_registry.json"
 
 
 class ErpFieldRegistryTests(unittest.TestCase):
+    def test_zsh_receipt_acceptance_result_resolves_at_column_four(self):
+        registry = sync.load_erp_field_registry(REGISTRY_PATH)
+        field = registry.resolve(
+            "qms_material_receipt", "原料入库单资料.XLS.XLS", "Test",
+            "验收结果", "验收结果", 4,
+        )
+        self.assertEqual(field.database_column, "erp_acceptance_result")
+
+    def test_generator_names_zsh_source_headers(self):
+        generator = importlib.import_module("generate_erp_field_registry")
+        cases = (
+            ("验收结果", "erp_acceptance_result"),
+            ("打折单价", "erp_discount_unit_price"),
+            ("退货判定", "erp_return_determination"),
+            ("是否免检", "erp_is_inspection_exempt"),
+            ("累计还出数量", "erp_cumulative_return_out_quantity"),
+            ("借出单号", "erp_loan_out_document_no"),
+            ("报关核销", "erp_customs_writeoff"),
+            ("延期天数", "erp_extension_days"),
+            ("借入部门名称", "erp_loan_in_department_name"),
+            ("完成编号", "erp_completion_no"),
+            ("流程工序", "erp_workflow_process"),
+            ("<因打X板>\r多报废数量", "erp_due_to_crossed_board_excess_scrap_quantity"),
+            ("金额2(本位币)\r层数比例", "erp_amount_2_local_currency_layer_count_ratio"),
+            ("当前板长", "erp_current_board_length"),
+            ("合计金额", "erp_total_amount"),
+            ("模具费", "erp_mold_fee"),
+            ("入库面积(平方米)", "erp_receipt_area_square_meters"),
+            ("预投率", "erp_planned_material_input_rate"),
+        )
+        for header, expected in cases:
+            with self.subTest(header=header):
+                self.assertEqual(generator.english_column_name(header, header, 1), expected)
+
+    def test_zsh_registry_merge_keeps_existing_columns_and_absent_sources(self):
+        generator = importlib.import_module("generate_erp_field_registry")
+        old = sync.ErpFieldRegistry([
+            sync.ErpFieldDefinition(
+                "qms_purchase_order", "采购订单资料.xls.xls", "Test", "采购单号", "采购单号",
+                "erp_purchase_order_no_v1", "erp_采购单号", "Excel列名：采购单号", 1,
+            ),
+            sync.ErpFieldDefinition(
+                "qms_purchase_order", "采购订单资料.xls.xls", "Test", "旧字段", "旧字段",
+                "erp_old_field", "erp_旧字段", "Excel列名：旧字段", 2,
+            ),
+            sync.ErpFieldDefinition(
+                "qms_engineering_data", "工程资料资料.xls", "Test", "规格", "规格",
+                "erp_specification", "erp_规格", "Excel列名：规格", 1,
+            ),
+        ])
+        generated = {"schema_version": 1, "fields": [
+            asdict(sync.ErpFieldDefinition(
+                "qms_purchase_order", "采购订单资料.XLS.XLS", "Test", "入库日期", "入库日期",
+                "erp_receipt_date", "erp_入库日期", "Excel列名：入库日期", 1,
+            )),
+            asdict(sync.ErpFieldDefinition(
+                "qms_purchase_order", "采购订单资料.XLS.XLS", "Test", "采购单号", "采购单号",
+                "erp_purchase_order_no", "erp_采购单号", "Excel列名：采购单号", 2,
+            )),
+        ], "collision_resolutions": []}
+        merged = generator.merge_registry_data(generated, old)
+        registry = sync.ErpFieldRegistry(sync.ErpFieldDefinition(**row) for row in merged["fields"])
+        self.assertEqual(len(registry.fields), 3)
+        self.assertEqual(registry.resolve(
+            "qms_purchase_order", "采购订单资料.XLS.XLS", "Test", "采购单号", "采购单号", 2,
+        ).database_column, "erp_purchase_order_no_v1")
+        self.assertEqual(registry.resolve(
+            "qms_engineering_data", "工程资料资料.xls", "Test", "规格", "规格", 1,
+        ).database_column, "erp_specification")
+        with self.assertRaises(sync.SyncError):
+            registry.resolve("qms_purchase_order", "采购订单资料.XLS.XLS", "Test", "旧字段", "旧字段", 2)
+
     def test_registry_matches_nested_daily_path_and_normalizes_repeated_excel_suffix(self):
         field = sync.ErpFieldDefinition(
             "qms_purchase_order", "采购订单资料.xls.xls", "Test", "采购单号", "采购单号",
             "erp_purchase_order_no", "erp_采购单号", "Excel列名：采购单号", 1,
+        )
+        registry = sync.ErpFieldRegistry([field])
+        self.assertEqual(
+            field,
+            registry.resolve(
+                "qms_purchase_order", "2026-9-17/采购订单资料.XLS", "Test",
+                "采购单号", "采购单号", 1,
+            ),
         )
 
     def test_registry_accepts_daily_export_collapsing_a_leading_backslash(self):
@@ -35,14 +115,6 @@ class ErpFieldRegistryTests(unittest.TestCase):
             registry.resolve(
                 "qms_customer_part", "2026-9-17/客户料号资料.xls", "Test",
                 "\\库存面积", "\\库存面积", 24,
-            ),
-        )
-        registry = sync.ErpFieldRegistry([field])
-        self.assertEqual(
-            field,
-            registry.resolve(
-                "qms_purchase_order", "2026-9-17/采购订单资料.XLS", "Test",
-                "采购单号", "采购单号", 1,
             ),
         )
 
@@ -376,16 +448,19 @@ class ErpFieldRegistryTests(unittest.TestCase):
     def test_real_mapping_generator_exports_english_identifier_and_chinese_comment(self):
         """A delivery mapping must expose the registry's BI-ready field metadata."""
         import generate_field_mapping_data as mapping
+        source = REGISTRY_PATH.parent / "data" / "zsh-数据源"
+        if not source.is_dir():
+            self.skipTest("local zsh source workbooks are unavailable")
 
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "real-mapping.json"
-            with patch.object(mapping, "OUTPUT", output):
+            with patch.object(mapping, "SOURCE_DIRECTORY", source), patch.object(mapping, "OUTPUT", output):
                 mapping.main()
 
             rows = json.loads(output.read_text(encoding="utf-8"))["mapping_rows"]
             purchase_order_no = next(
                 row for row in rows
-                if row["Excel 文件"] == "采购订单资料.xls.xls"
+                if row["Excel 文件"].casefold() == "采购订单资料.xls.xls"
                 and row["工作表"] == "Test"
                 and row["Excel 原始列名"] == "采购单号"
             )

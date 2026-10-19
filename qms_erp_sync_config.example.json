@@ -1,5 +1,5 @@
 {
-  "initialization_directory": "D:\\project\\hr_sync\\data\\BI数据源",
+  "initialization_directory": "D:\\project\\hr_sync\\data\\zsh-数据源",
   "incremental_directory": "D:\\项目文档\\rpa华软ERP导出",
   "skip_initialization": false,
   "source_file_keyword": "生产指示资料",

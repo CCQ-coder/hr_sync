@@ -420,11 +420,16 @@ def main(argv=None):
     parser.add_argument("--output-root", type=Path, default=root)
     parser.add_argument("--bi-file", type=Path, default=root / "bi_dashboard_queries.sql")
     parser.add_argument("--update-bi", action="store_true")
+    parser.add_argument("--skip-bi-validation", action="store_true",
+                        help="Generate migration SQL for a customer source without validating the BI query file")
     args = parser.parse_args(argv)
+    if args.skip_bi_validation and args.update_bi:
+        parser.error("--skip-bi-validation cannot be combined with --update-bi")
     try:
         registry = load_erp_field_registry(args.registry)
         rows = build_rename_manifest(registry)
-        rewritten = rewrite_bi_queries(args.bi_file.read_text(encoding="utf-8"), rows, registry)
+        rewritten = None if args.skip_bi_validation else rewrite_bi_queries(
+            args.bi_file.read_text(encoding="utf-8"), rows, registry)
         artifacts = {
             "sql/erp_field_rename_preflight.sql": render_preflight_sql(rows),
             "sql/erp_field_rename_apply.sql": render_apply_sql(rows),

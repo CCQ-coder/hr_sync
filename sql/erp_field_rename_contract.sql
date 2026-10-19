@@ -12,10 +12,7 @@ SET NAMES utf8mb4;
 ALTER TABLE `qms_material_issue` DROP COLUMN `erp_单价`;
 ALTER TABLE `qms_material_issue` DROP COLUMN `erp_单位`;
 ALTER TABLE `qms_material_issue` DROP COLUMN `erp_厂内编号`;
-ALTER TABLE `qms_material_issue` DROP COLUMN `erp_客户料号`;
 ALTER TABLE `qms_material_issue` DROP COLUMN `erp_客户编号`;
 ALTER TABLE `qms_material_issue` DROP COLUMN `erp_币别`;
-ALTER TABLE `qms_material_issue` DROP COLUMN `erp_输入日期`;
-ALTER TABLE `qms_material_issue` DROP COLUMN `erp_输入者`;
 
 SET SESSION sql_mode = @erp_migration_saved_sql_mode;

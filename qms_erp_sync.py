@@ -31,6 +31,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 import xlrd
+from xlrd.biffh import XL_WORKSHEET
 from openpyxl import load_workbook
 import pymysql
 from pymysql import MySQLError
@@ -44,6 +45,22 @@ SOURCE_KEY_PREFIX = "ERP-EXCEL:"
 API_PATH = "/api/v1/integrations/work-orders"
 SNAPSHOT_API_PATH = "/api/v1/integrations/work-orders/snapshot"
 EXCEL_SUFFIXES = (".xls", ".xlsx")
+# The ERP exporter used internal field names before 2026-09-16.  Only these
+# fully reviewed, whole-sheet header signatures may use positional aliases.
+LEGACY_ERP_HEADER_SIGNATURES: Mapping[str, str] = MappingProxyType({
+    "原料入库单资料": "a5308e858b96a488d6f8360951697e07b42baa92799b0f68992e18279659817f",
+    "原料出库单资料": "fd527802aa3038e9df2a8d2632f6f1760d2f795f2687dcd9f280362e0cd82afb",
+    "原料资料明细": "5cc0e973f0aaf60ed14de16b115eacf5d5a9ecaecf9cddb395a3dd293aa80306",
+    "各工段出数汇总资料": "55b6cb7329ec283c1bd4af4d2906a9c0110875f71d64c8852cc882514032b644",
+    "客户料号资料": "6e19ce14f1638ae54c1a82be7852a8994300231a33a6419b8ff8084600549560",
+    "客户订单资料": "2187f0beea54c609c5a52e65fcb402c5887037d7d44ce5b2cf4de0b6b9a0070c",
+    "工程资料资料": "fdf558291af18215339ec369e601da1700b03d242d27245dead5a225518e0534",
+    "成品入库单资料": "4f001b61e24cafc462468f4d7eac479cdf5552f6ed53bd4296fd19ece69102dd",
+    "生产指示资料": "23e574111095187ef399e1f0cf7176835756858653d7cc696779019a74d2836a",
+    "补料资料": "0408172c8715578269666388d05ba2175b83be22abe7f4e50d0b701ff8085c4e",
+    "送货单资料": "2bc7de2679bd8164db0745cf52a274a7faf4089cfc54d16e756e1fa86194c316",
+    "采购订单资料": "c96cad5b3b5b9ab36d814adfc58905eb3c5ce8dc4c8cf55c1d52b83a60699437",
+})
 DATABASE_MODE_LABEL = "数据库直连（默认，不需要 Token）"
 API_MODE_LABEL = "QMS 接口（需要网关 Token）"
 AUTO_SYNC_DEFAULT_INTERVAL_MINUTES = 5
@@ -167,7 +184,7 @@ FIELD_MAP: Dict[str, str] = {
     "currentProcessName": "工艺",
     "plannedQuantity": "投料数量",
     "batchNo": "管制卡号",
-    "customerCode": "客户编号",
+    "customerCode": "客户",
     "internalProductNo": "厂内编号",
     "customerPartNo": "客户料号",
     "processTechnology": "工艺",
@@ -228,6 +245,7 @@ DECIMAL_FIELDS = {
     "bBoardWidth", "materialArea", "productionNoticeArea", "customerOrderArea",
     "estimatedYieldRate", "plannedMaterialIssueQuantity",
 }
+MAX_ESTIMATED_YIELD_RATE = Decimal("999.99")  # qms_work_order.estimated_yield_rate DECIMAL(5,2)
 
 
 class SyncError(RuntimeError):
@@ -668,10 +686,10 @@ def open_excel_header(path: Path) -> List[str]:
             return [as_text(value) for value in next(sheet.iter_rows(values_only=True), ())]
         finally:
             workbook.close()
-    workbook = xlrd.open_workbook(str(path), on_demand=True)
+    workbook = open_legacy_compatible_xls(path)
     try:
-        sheet = workbook.sheet_by_index(0)
-        return [as_text(value) for value in sheet.row_values(0)] if sheet.nrows else []
+        sheet = xls_sheet_by_index(workbook, 0)
+        return [as_text(value) for value in xls_row_values(workbook, sheet, 0)] if sheet.nrows else []
     finally:
         workbook.release_resources()
 
@@ -710,15 +728,15 @@ def iter_excel_rows(path: Path) -> Tuple[int, Iterable[Dict[str, Any]]]:
 
         return 0, rows()
 
-    workbook = xlrd.open_workbook(str(path), on_demand=True)
-    sheet = workbook.sheet_by_index(0)
-    headers = [normalize_header(item) for item in sheet.row_values(0)] if sheet.nrows else []
+    workbook = open_legacy_compatible_xls(path)
+    sheet = xls_sheet_by_index(workbook, 0)
+    headers = [normalize_header(item) for item in xls_row_values(workbook, sheet, 0)] if sheet.nrows else []
     datemode = workbook.datemode
 
     def rows() -> Iterable[Dict[str, Any]]:
         try:
             for row_index in range(1, sheet.nrows):
-                values_row = sheet.row_values(row_index)
+                values_row = xls_row_values(workbook, sheet, row_index)
                 yield {headers[index]: values_row[index] if index < len(values_row) else None for index in range(len(headers)) if headers[index]}
         finally:
             workbook.release_resources()
@@ -778,6 +796,67 @@ def xlsx_safe_cell(value: Any) -> Any:
     if isinstance(value, date):
         return value.isoformat()
     return json_safe_cell(value)
+
+
+def decode_legacy_xls_text(value: str) -> str:
+    """Decode bytes that xlrd exposed as Latin-1 when a Chinese XLS omitted CODEPAGE."""
+    try:
+        return value.encode("latin-1").decode("gb18030", errors="replace")
+    except UnicodeEncodeError:
+        return value
+
+
+def xls_text_value(workbook: Any, value: Any) -> Any:
+    """Repair text only for the ERP's BIFF5 files that omitted a codepage record."""
+    if (
+        isinstance(value, str)
+        and getattr(workbook, "codepage", None) is None
+        and getattr(workbook, "encoding", None) == "iso-8859-1"
+    ):
+        return decode_legacy_xls_text(value)
+    return value
+
+
+def xls_row_values(workbook: Any, sheet: Any, row_index: int) -> List[Any]:
+    return [xls_text_value(workbook, value) for value in sheet.row_values(row_index)]
+
+
+def open_legacy_compatible_xls(path: Path):
+    """Open XLS lazily so malformed BIFF5 row limits can be repaired per sheet."""
+    return xlrd.open_workbook(str(path), on_demand=True, ragged_rows=True)
+
+
+def xls_sheet_by_index(workbook: Any, sheet_index: int):
+    """Read an ERP BIFF5 sheet whose exporter wrote beyond the old 16,384-row limit."""
+    try:
+        return workbook.sheet_by_index(sheet_index)
+    except AssertionError:
+        if getattr(workbook, "biff_version", 80) != 50:
+            raise
+        workbook._position = workbook._sh_abs_posn[sheet_index]
+        workbook.getbof(XL_WORKSHEET)
+        sheet = xlrd.sheet.Sheet(
+            workbook,
+            workbook._position,
+            workbook._sheet_names[sheet_index],
+            sheet_index,
+        )
+        sheet.utter_max_rows = 65536
+        sheet.read(workbook)
+        workbook._sheet_list[sheet_index] = sheet
+        return sheet
+
+
+def iter_xls_sheets(workbook: Any) -> Iterable[Tuple[str, Any]]:
+    """Yield decoded sheet names while retaining compatibility with workbook doubles."""
+    if type(getattr(workbook, "nsheets", None)) is int:
+        for sheet_index in range(workbook.nsheets):
+            sheet = xls_sheet_by_index(workbook, sheet_index)
+            yield xls_text_value(workbook, sheet.name), sheet
+        return
+    for stored_name in workbook.sheet_names():
+        sheet = workbook.sheet_by_name(stored_name)
+        yield xls_text_value(workbook, stored_name), sheet
 
 
 def unique_headers(values: Sequence[Any]) -> List[str]:
@@ -845,6 +924,14 @@ class ErpFieldDefinition:
     column_index: int = 0
 
 
+@dataclass(frozen=True)
+class ResolvedSourceSchema:
+    normalized_headers: Tuple[str, ...]
+    is_work_order: bool
+    target_table: Optional[str]
+    definitions: Tuple[ErpFieldDefinition, ...]
+
+
 def canonical_source_file_name(source_file: str) -> str:
     """Match registry files by basename across date folders and doubled suffixes."""
     name = Path(str(source_file).replace("\\", "/")).name.casefold()
@@ -862,6 +949,7 @@ class ErpFieldRegistry:
         by_position = {}
         targets = set()
         positions = set()
+        by_file_schema: Dict[Tuple[str, str, str], List[ErpFieldDefinition]] = {}
         for field in definitions:
             canonical_file = canonical_source_file_name(field.source_file)
             scope = (field.table_name, canonical_file, field.sheet_name, field.excel_unique_header)
@@ -891,11 +979,16 @@ class ErpFieldRegistry:
                 raise SyncError(f"字段注册表目标字段冲突：{target}")
             scopes[scope] = field
             by_position[position] = field
+            by_file_schema.setdefault((canonical_file, field.table_name, field.sheet_name), []).append(field)
             targets.add(target)
             positions.add(position)
         self.fields = definitions
         self._by_scope = MappingProxyType(scopes)
         self._by_position = MappingProxyType(by_position)
+        self._by_file_schema = MappingProxyType({
+            key: tuple(sorted(values, key=lambda item: item.column_index))
+            for key, values in by_file_schema.items()
+        })
 
     def resolve(
         self, table_name: str, source_file: str, sheet_name: str,
@@ -924,6 +1017,27 @@ class ErpFieldRegistry:
                 "请更新并审核 erp_field_registry.json 后重试。"
             )
         return field
+
+    def resolve_legacy_source(
+        self, source_file: str, raw_header_values: Sequence[Any],
+    ) -> Optional[Tuple[ErpFieldDefinition, ...]]:
+        canonical_file = canonical_source_file_name(source_file)
+        expected = LEGACY_ERP_HEADER_SIGNATURES.get(canonical_file)
+        if expected is None or legacy_header_signature(raw_header_values) != expected:
+            return None
+        candidates = [
+            fields for (file_name, _table_name, _sheet_name), fields in self._by_file_schema.items()
+            if file_name == canonical_file
+        ]
+        if len(candidates) != 1:
+            raise SyncError(f"旧版 ERP 表头无法唯一匹配字段注册表：{source_file}")
+        definitions = candidates[0][:len(raw_header_values)]
+        if (
+            len(definitions) != len(raw_header_values)
+            or any(field.column_index != index for index, field in enumerate(definitions, 1))
+        ):
+            raise SyncError(f"旧版 ERP 表头列数与字段注册表不一致：{source_file}")
+        return definitions
 
 
 def bundled_resource_path(name: str) -> Path:
@@ -984,6 +1098,45 @@ def is_work_order_sheet(headers: Sequence[Any]) -> bool:
     return normalize_header("生产指令号") in normalized and normalize_header("厂内编号") in normalized
 
 
+def legacy_header_signature(raw_header_values: Sequence[Any]) -> str:
+    headers = [excel_header_identity(value) for value in raw_header_values]
+    document = json.dumps(headers, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(document.encode("utf-8")).hexdigest()
+
+
+def resolve_source_schema(
+    registry: ErpFieldRegistry,
+    relative_file: str,
+    sheet_name: str,
+    raw_header_values: Sequence[Any],
+    *,
+    map_work_orders: bool,
+) -> ResolvedSourceSchema:
+    raw_headers = unique_headers(raw_header_values)
+    normalized_headers = tuple(normalize_header(value) for value in raw_header_values)
+    work_order = map_work_orders and is_work_order_sheet(raw_header_values)
+    target_table = source_table_name(relative_file, sheet_name, work_order)
+    try:
+        definitions = tuple(
+            registry.resolve(
+                target_table or "qms_work_order", relative_file, sheet_name,
+                excel_header_identity(value), raw_headers[index], index + 1,
+            )
+            for index, value in enumerate(raw_header_values)
+        )
+        return ResolvedSourceSchema(normalized_headers, work_order, target_table, definitions)
+    except SyncError as original_error:
+        definitions = registry.resolve_legacy_source(relative_file, raw_header_values)
+        if definitions is None:
+            raise original_error
+        work_order = map_work_orders and definitions[0].table_name == "qms_work_order"
+        if definitions[0].table_name == "qms_work_order" and not work_order:
+            raise original_error
+        target_table = None if work_order else definitions[0].table_name
+        normalized_headers = tuple(normalize_header(field.excel_source_header) for field in definitions)
+        return ResolvedSourceSchema(normalized_headers, work_order, target_table, definitions)
+
+
 def raw_business_key(row: Mapping[str, Any], row_no: int) -> str:
     """A readable, stable-enough source identifier; row number guarantees uniqueness."""
     candidates = (
@@ -1042,17 +1195,15 @@ def iter_all_source_records(
                     if sheet.max_row <= 1:
                         callback(f"  工作表：{sheet.title}（0 条数据，跳过字段写入）")
                         continue
+                    schema = resolve_source_schema(
+                        registry, relative_file, sheet.title, raw_header_values,
+                        map_work_orders=map_work_orders,
+                    )
                     raw_headers = unique_headers(raw_header_values)
-                    normalized_headers = [normalize_header(value) for value in raw_header_values]
-                    is_work_order = map_work_orders and is_work_order_sheet(raw_header_values)
-                    target_table = source_table_name(relative_file, sheet.title, is_work_order)
-                    definitions = [
-                        registry.resolve(
-                            target_table or "qms_work_order", relative_file, sheet.title,
-                            excel_header_identity(value), raw_headers[index], index + 1,
-                        )
-                        for index, value in enumerate(raw_header_values)
-                    ]
+                    normalized_headers = schema.normalized_headers
+                    is_work_order = schema.is_work_order
+                    target_table = schema.target_table
+                    definitions = schema.definitions
                     callback(
                         f"  工作表：{sheet.title}（{'工单映射 + 实体字段写入' if is_work_order else '实体字段写入'}，"
                         f"目标表：{target_table or 'qms_work_order / qms_production_batch'}）"
@@ -1070,41 +1221,38 @@ def iter_all_source_records(
                             continue
                         yield from _source_record_pair(
                             relative_file, sheet.title, row_index, row, raw_data, 0, is_work_order,
-                            stats, target_table, definitions,
+                        stats, target_table, definitions, callback,
                         )
             finally:
                 workbook.close()
             continue
 
         try:
-            workbook = xlrd.open_workbook(str(path), on_demand=True)
+            workbook = open_legacy_compatible_xls(path)
         except Exception as exc:
             raise SyncError(f"无法打开 Excel 文件 {relative_file}：{exc}") from exc
         try:
-            for sheet_name in workbook.sheet_names():
-                sheet = workbook.sheet_by_name(sheet_name)
+            for sheet_name, sheet in iter_xls_sheets(workbook):
                 stats.sheets_scanned += 1
-                raw_header_values = sheet.row_values(0) if sheet.nrows else []
+                raw_header_values = xls_row_values(workbook, sheet, 0) if sheet.nrows else []
                 if sheet.nrows <= 1:
                     callback(f"  工作表：{sheet_name}（0 条数据，跳过字段写入）")
                     continue
+                schema = resolve_source_schema(
+                    registry, relative_file, sheet_name, raw_header_values,
+                    map_work_orders=map_work_orders,
+                )
                 raw_headers = unique_headers(raw_header_values)
-                normalized_headers = [normalize_header(value) for value in raw_header_values]
-                is_work_order = map_work_orders and is_work_order_sheet(raw_header_values)
-                target_table = source_table_name(relative_file, sheet_name, is_work_order)
-                definitions = [
-                    registry.resolve(
-                        target_table or "qms_work_order", relative_file, sheet_name,
-                        excel_header_identity(value), raw_headers[index], index + 1,
-                    )
-                    for index, value in enumerate(raw_header_values)
-                ]
+                normalized_headers = schema.normalized_headers
+                is_work_order = schema.is_work_order
+                target_table = schema.target_table
+                definitions = schema.definitions
                 callback(
                     f"  工作表：{sheet_name}（{'工单映射 + 实体字段写入' if is_work_order else '实体字段写入'}，"
                     f"目标表：{target_table or 'qms_work_order / qms_production_batch'}）"
                 )
                 for zero_based_row in range(1, sheet.nrows):
-                    values_row = sheet.row_values(zero_based_row)
+                    values_row = xls_row_values(workbook, sheet, zero_based_row)
                     row = {
                         normalized_headers[index]: values_row[index] if index < len(values_row) else None
                         for index in range(len(normalized_headers)) if normalized_headers[index]
@@ -1121,7 +1269,7 @@ def iter_all_source_records(
                         continue
                     yield from _source_record_pair(
                         relative_file, sheet_name, zero_based_row + 1, row, raw_data,
-                        workbook.datemode, is_work_order, stats, target_table, definitions,
+                        workbook.datemode, is_work_order, stats, target_table, definitions, callback,
                     )
         finally:
             workbook.release_resources()
@@ -1138,6 +1286,7 @@ def _source_record_pair(
     stats: SourceScanStats,
     source_table: Optional[str],
     definitions: Sequence[ErpFieldDefinition],
+    callback: Callable[[str], None],
 ) -> Iterable[Tuple[RawSourceRecord, Optional[Dict[str, Any]]]]:
     """Build a source record and, where applicable, its work-order view."""
     identity = "\x1f".join((relative_file.casefold(), sheet_name.casefold(), str(row_no)))
@@ -1168,6 +1317,13 @@ def _source_record_pair(
                 payload = build_payload(row, datemode)
             except SyncError as exc:
                 raise SyncError(f"{relative_file} / {sheet_name} 第 {row_no} 行：{exc}") from exc
+            source_rate = as_decimal(source_value(row, "estimatedYieldRate"))
+            if source_rate is not None and payload["estimatedYieldRate"] is None:
+                callback(
+                    f"数据提示：{relative_file} / {sheet_name} 第 {row_no} 行“成品利用率” "
+                    f"{source_rate} 超出 QMS 字段 DECIMAL(5,2) 范围；"
+                    "原值已保留在 ERP 英文字段，QMS 数值字段留空。"
+                )
             # Every production-instruction header gets a queryable physical
             # English field on qms_work_order, in addition to the
             # normal QMS work-order/batch mappings created above.
@@ -1191,6 +1347,11 @@ def build_payload(row: Mapping[str, Any], datemode: int) -> Dict[str, Any]:
         payload[field] = as_integer(source_value(row, field))
     for field in DECIMAL_FIELDS:
         payload[field] = as_decimal(source_value(row, field))
+    rate = payload["estimatedYieldRate"]
+    if rate is not None and abs(Decimal(rate)) > MAX_ESTIMATED_YIELD_RATE:
+        # Keep the exact export value in erp_finished_goods_utilization_rate.
+        # The QMS decimal(5,2) projection cannot store it without failing the batch.
+        payload["estimatedYieldRate"] = None
     for field in set(FIELD_MAP) - DATE_FIELDS - INTEGER_FIELDS - DECIMAL_FIELDS:
         payload[field] = as_text(source_value(row, field)) or None
 
@@ -1379,6 +1540,13 @@ class QmsDatabaseClient:
                 )
             except MySQLError as exc:
                 self._table_columns.pop(table_name, None)
+                if exc.args and exc.args[0] == 1118:
+                    raise SyncError(
+                        f"无法在 {table_name} 添加 ERP 字段：MySQL 1118，表的单行大小已达上限。"
+                        "请由 DBA 检查并备份该表，确认旧字段已完成迁移后清理不再使用的旧字段；"
+                        "同步工具不会自动删除旧字段。\n"
+                        f"{exc}"
+                    ) from exc
                 raise SyncError(
                     f"无法在 {table_name} 创建 ERP 业务字段或更新字段注释。"
                     "请使用拥有 ALTER TABLE 权限的 MySQL 账号运行同步。\n"

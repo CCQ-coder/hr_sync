@@ -7,6 +7,7 @@
 - `main`：基础分支；客户专属变更应提交到对应的 `zsh` 或 `gy` 分支。
 
 两客户的真实配置、数据库连接、同步状态及源数据应分别维护，部署前确认所用分支和客户配置。
+`zsh` 分支的 `erp_field_registry.json` 已按 `data/zsh-数据源` 的表头生成，并保留旧注册表中未出现在这批源文件里的映射及已使用的英文列名。源文件表头变化时，应重新审核注册表后再打包。
 
 ## 文件布局
 
@@ -50,10 +51,10 @@
 
 ## 运行 EXE
 
-1. 只分享或下载干净的 `dist\QMS-ERP数据同步工具-英文字段版-发布包` 目录；不要分享整个 `dist` 目录。
+1. 只分享或下载干净的 `dist\QMS-ERP数据同步工具-zsh-英文字段版-发布包` 目录；不要分享整个 `dist` 目录。
 2. 在目标服务器的受控本机目录中复制该发布包，再将 `qms_erp_sync_config.example.json` 复制并重命名为 `qms_erp_sync_config.json`。
 3. 仅在这个本机部署副本中填写 MySQL 主机、端口、库名、账号、密码和租户编码；界面不显示这些敏感配置。不要把实际配置文件放回、打包或分享给其它人。
-4. 打开 `QMS-ERP数据同步工具-英文字段版.exe`，分别选择初始化全量目录（例如 `D:\project\hr_sync\data\BI数据源`）和增量根目录（例如 `D:\项目文档\rpa华软ERP导出`）。
+4. 打开 `QMS-ERP数据同步工具-zsh-英文字段版.exe`，分别选择初始化全量目录（例如 `D:\project\hr_sync\data\zsh-数据源`）和增量根目录（例如 `D:\项目文档\rpa华软ERP导出`）。
 5. 点击“测试数据库连接”，确认无误后点击“开始同步”。
 
 数据库账号应使用 QMS 的 MySQL 应用账号，并至少具备固定业务表的 `SELECT`、`INSERT`、`UPDATE`、`CREATE TABLE`、`CREATE INDEX`、`ALTER TABLE` 权限。不要把 MySQL `root` 账号作为日常同步账号。
@@ -68,10 +69,26 @@
 2. 以目标数据库执行 `erp_field_rename_preflight.sql`，处理所有预检异常。
 3. 执行 `erp_field_rename_apply.sql`。
 4. 执行 `erp_field_rename_verify.sql`，确认没有缺列、字段注释不一致或数据回填异常。
-5. 部署并运行 `QMS-ERP数据同步工具-英文字段版.exe`。
+5. 部署并运行 `QMS-ERP数据同步工具-zsh-英文字段版.exe`。
 6. 仅当验证结果和业务抽查均无误时，才可选择执行 `erp_field_rename_contract.sql` 清理可收尾的旧共享字段。
 
 上述 SQL 会生成到项目的 `sql` 目录，也会随新版 EXE 复制到干净的发布包目录。它们是供 DBA 审核和手动执行的文件；同步工具不会连接数据库执行这些迁移 SQL。`erp_field_rename_manifest.json` 记录每一个旧字段、新字段、来源文件和工作表的对应关系。
+
+### `qms_material_issue` 的 MySQL 1118 定向修复（2026-10-15）
+
+当前目标库的 `qms_material_issue` 是 `DYNAMIC` 行格式、0 行数据，但保留 41 个不属于当前 zsh 字段注册表的旧 `erp_` 列。加上 4 个缺失的当前字段会触发 MySQL 1118；在空临时克隆表中清理旧列并加入新列已验证成功。`sql/qms_material_issue_1118_manifest.json` 固定了本次审核的字段清单。此清单只适用于预检通过的当前目标表，不应直接套用于其它数据库。
+
+停止所有同步任务并完成数据库备份后，在项目根目录运行只读预检：
+
+```powershell
+.\.venv\Scripts\python.exe repair_material_issue_row_size.py --config 'D:\project\hr_sync\dist\QMS-ERP数据同步工具-zsh-英文字段版-发布包\qms_erp_sync_config.json'
+```
+
+预检会核对表结构、确认表为空，并在会话临时表上验证完整 DDL；不会修改业务表。DBA 审核 41 个待清理字段、4 个待新增字段和数据库备份后，使用相同命令追加 `--apply` 执行。执行时会先创建 `qms_material_issue_schema_backup_20261015` 结构备份，再在一次 `ALTER TABLE` 中清理旧列并新增字段。任何预检不符或备份表已存在都会停止，不会覆盖备份。同步程序本身仍不会自动删除旧列。
+
+2026-10-15 的修复包为 `dist\QMS-ERP数据同步工具-zsh-英文字段版-20261015-发布包`。它不含实际数据库配置；在受控部署副本中使用原有 `qms_erp_sync_config.json`。
+
+2026-10-16 的新版处理了另一处源值越界：`生产指示资料.XLS.XLS` 第 11349 行“成品利用率”是 `5894.55`，超出 QMS `estimated_yield_rate DECIMAL(5,2)` 的范围。程序会在日志中标明该行，将 QMS 数值列留空，并在 `erp_finished_goods_utilization_rate` 原始 ERP 英文字段完整保留 `5894.55`。其它正常范围内的值仍写入 QMS 数值列。新版发布包为 `dist\QMS-ERP数据同步工具-zsh-英文字段版-20261016-发布包`。
 
 ## 初始化与增量同步
 
@@ -85,7 +102,7 @@
 
 ```json
 {
-  "initialization_directory": "D:\\project\\hr_sync\\data\\BI数据源",
+  "initialization_directory": "D:\\project\\hr_sync\\data\\zsh-数据源",
   "incremental_directory": "D:\\项目文档\\rpa华软ERP导出",
   "skip_initialization": false,
   "auto_sync_enabled": true,
@@ -109,19 +126,26 @@ GROUP BY tenant_code;
 
 ## 打包
 
-在项目目录执行：
+源表头变化时，先在项目目录生成并审核 `zsh` 字段注册表和迁移 SQL（迁移 SQL 只供 DBA 审核，不会自动执行）：
 
 ```powershell
-.\build_exe.ps1 -Name 'QMS-ERP数据同步工具-英文字段版'
+./.venv/Scripts/python.exe generate_erp_field_registry.py --source-directory data/zsh-数据源 --base-registry releases/20261009/erp_field_registry.json --output erp_field_registry.json
+./.venv/Scripts/python.exe generate_erp_field_migration.py --skip-bi-validation
 ```
 
-打包会在共享构建目录生成 `dist\QMS-ERP数据同步工具-英文字段版.exe`，并在其下生成唯一允许对外分享的干净发布包目录：
+随后执行打包：
 
-`dist\QMS-ERP数据同步工具-英文字段版-发布包`
+```powershell
+.\build_exe.ps1 -Name 'QMS-ERP数据同步工具-zsh-英文字段版'
+```
+
+打包会在共享构建目录生成 `dist\QMS-ERP数据同步工具-zsh-英文字段版.exe`，并在其下生成唯一允许对外分享的干净发布包目录：
+
+`dist\QMS-ERP数据同步工具-zsh-英文字段版-发布包`
 
 发布包只包含以下白名单文件：
 
-- `QMS-ERP数据同步工具-英文字段版.exe`
+- `QMS-ERP数据同步工具-zsh-英文字段版.exe`
 - `erp_field_registry.json`
 - `erp_field_rename_manifest.json`
 - `erp_field_rename_preflight.sql`
@@ -140,6 +164,6 @@ GROUP BY tenant_code;
 命令行或 Windows 任务计划程序可使用：
 
 ```powershell
-.\QMS-ERP数据同步工具-英文字段版.exe --headless
-.\QMS-ERP数据同步工具-英文字段版.exe --headless --dry-run
+.\QMS-ERP数据同步工具-zsh-英文字段版.exe --headless
+.\QMS-ERP数据同步工具-zsh-英文字段版.exe --headless --dry-run
 ```

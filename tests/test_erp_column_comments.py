@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from openpyxl import Workbook
+from pymysql.err import OperationalError
 
 import qms_erp_sync as sync
 
@@ -110,6 +111,23 @@ class ErpColumnCommentTests(unittest.TestCase):
         cursor = RecordingCursor([(field.database_column, field.column_comment)])
         make_client()._ensure_erp_columns(cursor, "qms_work_order", {field.database_column: field})
         self.assertFalse(any(sql.startswith("ALTER TABLE") for sql, _ in cursor.executed))
+
+    def test_row_size_error_explains_schema_cleanup_instead_of_permissions(self):
+        field = processing_field("qms_material_issue")
+
+        class RowSizeCursor(RecordingCursor):
+            def execute(self, statement, values=None):
+                if statement.startswith("ALTER TABLE"):
+                    raise OperationalError(1118, "Row size too large")
+                super().execute(statement, values)
+
+        with self.assertRaises(sync.SyncError) as caught:
+            make_client()._ensure_erp_columns(
+                RowSizeCursor(), "qms_material_issue", {field.database_column: field}
+            )
+        self.assertIn("1118", str(caught.exception))
+        self.assertIn("旧字段", str(caught.exception))
+        self.assertNotIn("ALTER TABLE 权限", str(caught.exception))
 
     def test_multiple_comments_are_bound_and_successful_add_is_cached(self):
         first = processing_field()

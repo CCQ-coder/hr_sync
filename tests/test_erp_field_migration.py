@@ -230,6 +230,18 @@ class ErpFieldMigrationTests(unittest.TestCase):
             self.assertEqual(original, {path: path.read_bytes() for path in artifacts})
             self.assertEqual(bi.read_text(encoding="utf-8"), "SELECT `erp_未知` FROM qms_customer_order;")
 
+    def test_cli_can_generate_customer_migration_without_unrelated_bi(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            registry = root / "registry.json"
+            from dataclasses import asdict
+            registry.write_text(json.dumps({"schema_version": 1, "fields": [asdict(self.field())]}), encoding="utf-8")
+            args = ["--registry", str(registry), "--output-root", str(root),
+                    "--bi-file", str(root / "missing-bi.sql"), "--skip-bi-validation"]
+            self.assertEqual(self.migration.main(args), 0)
+            self.assertTrue((root / "sql/erp_field_rename_apply.sql").is_file())
+            self.assertTrue((root / "outputs/erp_field_rename_manifest.json").is_file())
+
     def test_bi_comma_join_ambiguity_is_not_silently_rewritten(self):
         rows = [self.row, replace(self.row, table_name="qms_purchase_order", new_field="erp_purchase_processing_method")]
         with self.assertRaisesRegex(SyncError, "BLOCKED"):
@@ -306,16 +318,16 @@ class ErpFieldMigrationTests(unittest.TestCase):
         from qms_erp_sync import load_erp_field_registry
         registry = load_erp_field_registry()
         rows = self.migration.build_rename_manifest(registry)
-        self.assertEqual(len(rows), 1107)
-        self.assertEqual(len({row.table_name for row in rows}), 11)
-        self.assertEqual(sum(row.migration_kind == "split_source" for row in rows), 16)
+        self.assertEqual(len(rows), 898)
+        self.assertEqual(len({row.table_name for row in rows}), 12)
+        self.assertEqual(sum(row.migration_kind == "split_source" for row in rows), 10)
         apply = self.migration.render_apply_sql(rows)
-        self.assertEqual(apply.count("CHANGE COLUMN"), 1091)
-        self.assertEqual(apply.count("ADD COLUMN"), 16)
-        self.assertEqual(apply.count("\nUPDATE "), 16)
+        self.assertEqual(apply.count("CHANGE COLUMN"), 888)
+        self.assertEqual(apply.count("ADD COLUMN"), 10)
+        self.assertEqual(apply.count("\nUPDATE "), 10)
         self.assertNotIn("DROP COLUMN", apply)
         contract = self.migration.render_contract_sql(rows)
-        self.assertEqual(contract.count("DROP COLUMN"), 8)
+        self.assertEqual(contract.count("DROP COLUMN"), 5)
         # qms_material_issue's two unit fields retain both workbook values.
         query = self.rewrite("SELECT `erp_单位` FROM qms_material_issue", rows)
         self.assertEqual(query, "SELECT COALESCE(`erp_unit_replenishment_26e8962890`, `erp_unit_source_9659f2994f`) FROM qms_material_issue")

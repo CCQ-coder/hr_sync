@@ -1,6 +1,6 @@
 param(
     [switch]$Clean,
-    [string]$Name = 'QMS-ERP数据同步工具-英文字段版'
+    [string]$Name = 'QMS-ERP数据同步工具-zsh-英文字段版'
 )
 
 $ErrorActionPreference = 'Stop'
