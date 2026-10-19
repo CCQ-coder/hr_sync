@@ -6,7 +6,6 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 
-import xlrd
 from openpyxl import load_workbook
 
 from qms_erp_sync import (
@@ -17,9 +16,11 @@ from qms_erp_sync import (
     INTEGER_FIELDS,
     WORK_ORDER_DB_FIELDS,
     excel_header_identity,
+    decode_erp_xls_cell,
     load_erp_field_registry,
     normalize_header,
     is_work_order_sheet,
+    open_erp_xls,
     source_table_name,
     unique_headers,
 )
@@ -49,11 +50,14 @@ def iter_workbook_headers(path: Path) -> Iterable[Tuple[str, List[Any]]]:
             workbook.close()
         return
 
-    workbook = xlrd.open_workbook(str(path), on_demand=True)
+    workbook = open_erp_xls(path)
     try:
-        for sheet_name in workbook.sheet_names():
-            sheet = workbook.sheet_by_name(sheet_name)
-            yield sheet_name, sheet.row_values(0) if sheet.nrows else []
+        for raw_sheet_name in workbook.sheet_names():
+            sheet = workbook.sheet_by_name(raw_sheet_name)
+            sheet_name = decode_erp_xls_cell(raw_sheet_name, workbook.encoding)
+            headers = [decode_erp_xls_cell(value, workbook.encoding)
+                       for value in sheet.row_values(0)] if sheet.nrows else []
+            yield sheet_name, headers
     finally:
         workbook.release_resources()
 

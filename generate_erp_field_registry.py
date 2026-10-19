@@ -47,6 +47,7 @@ BUSINESS_TERMS = {
     "工艺": "process_technology", "成型方式": "forming_method",
     "成型要求": "forming_requirements", "结构工艺": "structure_technology",
     "税率": "tax_rate", "达成率": "achievement_rate", "不良率": "defect_rate",
+    "率": "rate",
     "号码": "no", "可交": "available_delivery", "表头": "header",
     "存货": "inventory", "变更": "change", "包装": "packaging",
     "最新版": "latest_version", "量": "quantity", "型号": "model",
@@ -115,7 +116,7 @@ BUSINESS_TERMS = {
     "工时": "labor_hours", "效率": "efficiency", "工段": "process_section",
     "工序": "process", "线别": "line", "在线": "in_process",
     "存板": "board_inventory", "产值": "output_value", "目标": "target",
-    "计件": "piecework", "总额": "total_amount", "日": "day", "时": "hour",
+    "计件": "piecework", "总额": "total_amount", "合计": "total", "日": "day", "时": "hour",
     "输入者": "entered_by", "输入": "entry", "创建者": "created_by",
     "创建": "creation", "审核者": "reviewed_by", "审核": "review",
     "审批": "approval", "批准": "approval", "签名": "signature",
@@ -135,7 +136,7 @@ BUSINESS_TERMS = {
     "口头": "verbal", "不含停交": "excluding_stopped_deliveries",
     "不补不换": "no_replacement", "入帐": "posting", "发票": "invoice",
     "开票": "invoicing", "收款": "collection", "付款": "payment",
-    "收费": "charged", "免费": "free", "费用": "expense", "各项": "itemized",
+    "收费": "charged", "免费": "free", "费用": "expense", "费": "fee", "各项": "itemized",
     "小计": "subtotal", "其他": "other", "其它": "other",
     "退货": "return", "退单": "rejected_order", "出口": "export",
     "不出口": "not_export", "贸易": "trade", "增值税": "vat",
@@ -191,7 +192,8 @@ BUSINESS_TERMS = {
     "免检": "inspection_exempt", "还出": "return_out",
     "借出": "loan_out", "借入": "loan_in", "延期": "extension",
     "报关核销": "customs_writeoff", "报关": "customs_declaration",
-    "订购内容": "order_content",
+    "订购内容": "order_content", "平方米": "square_meters",
+    "预投": "planned_material_input",
     "%": "percent", "‰": "per_mille", "≥": "minimum",
 }
 ORDERED_TERMS = sorted(BUSINESS_TERMS, key=lambda term: (-len(term), term))
@@ -324,8 +326,11 @@ def merge_registry_data(generated: dict, base_registry: ErpFieldRegistry) -> dic
                 "sheet_name": field.sheet_name, "excel_unique_header": field.excel_unique_header,
                 "base_column": base_name, "database_column": field.database_column,
             })
-    return {"schema_version": 1, "fields": [asdict(field) for field in merged],
-            "collision_resolutions": resolutions}
+    result = {"schema_version": 1, "fields": [asdict(field) for field in merged],
+              "collision_resolutions": resolutions}
+    if base_registry.source_layouts:
+        result["source_layouts"] = list(base_registry.source_layouts)
+    return result
 
 
 def registry_text(data: dict) -> str:

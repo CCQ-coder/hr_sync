@@ -19,6 +19,189 @@ GY_RECEIPT_HEADERS = Path(__file__).resolve().parent / "fixtures" / "gy_material
 
 
 class ErpFieldRegistryTests(unittest.TestCase):
+    def test_reviewed_daily_layout_maps_code_headers_and_rejects_drift(self):
+        first = sync.ErpFieldDefinition(
+            "qms_material_receipt", "原料入库单资料.xls.xls", "Test",
+            "入库单号", "入库单号", "erp_receipt_no",
+            "erp_入库单号", "Excel列名：入库单号", 1,
+        )
+        second = sync.ErpFieldDefinition(
+            "qms_material_receipt", "原料入库单资料.xls.xls", "Test",
+            "验收结果", "验收结果", "erp_acceptance_result",
+            "erp_验收结果", "Excel列名：验收结果", 4,
+        )
+        layout = {
+            "source_file": "原料入库单资料.xls",
+            "table_name": "qms_material_receipt",
+            "raw_headers": ["ylr_bh", "ok_tc_thh2"],
+            "canonical_headers": ["入库单号", "验收结果"],
+            "database_columns": ["erp_receipt_no", "erp_acceptance_result"],
+        }
+        registry = sync.ErpFieldRegistry([first, second], [layout])
+        file_name = "2026-09-11/原料入库单资料.xls"
+        self.assertEqual(
+            registry.canonical_headers_for(file_name, ["ylr_bh", "ok_tc_thh2"]),
+            ["入库单号", "验收结果"],
+        )
+        definitions = registry.resolve_sheet(
+            "qms_material_receipt", file_name, "原料入库单资料",
+            ["ylr_bh", "ok_tc_thh2"],
+        )
+        self.assertEqual([field.database_column for field in definitions],
+                         ["erp_receipt_no", "erp_acceptance_result"])
+        with self.assertRaises(sync.SyncError):
+            registry.resolve_sheet(
+                "qms_material_receipt", file_name, "原料入库单资料",
+                ["ylr_bh", "unknown"],
+            )
+
+    def test_reviewed_daily_layout_can_define_new_english_column(self):
+        layout = {
+            "source_file": "原料入库单资料.xls",
+            "table_name": "qms_material_receipt",
+            "raw_headers": ["新增字段"],
+            "database_columns": ["erp_new_receipt_field"],
+        }
+        registry = sync.ErpFieldRegistry([], [layout])
+        field = registry.resolve_sheet(
+            "qms_material_receipt", "2026-09-16/原料入库单资料.xls",
+            "Test", ["新增字段"],
+        )[0]
+        self.assertEqual(field.database_column, "erp_new_receipt_field")
+        self.assertEqual(field.column_comment, "Excel列名：新增字段")
+
+    def test_new_daily_field_definition_is_stable_across_files_and_batches(self):
+        base = sync.ErpFieldDefinition(
+            "qms_material_receipt", "原料入库单资料.xls.xls", "Test",
+            "入库单号", "入库单号", "erp_receipt_no",
+            "erp_入库单号", "Excel列名：入库单号", 1,
+        )
+        layouts = [{
+            "source_file": "原料入库单资料.xls",
+            "table_name": "qms_material_receipt",
+            "raw_headers": headers,
+            "canonical_headers": ["入库单号", "新增字段"],
+            "database_columns": ["erp_receipt_no", "erp_new_receipt_field"],
+        } for headers in (["ylr_bh", "new_code"], ["入库单号", "新增字段"])]
+        registry = sync.ErpFieldRegistry([base], layouts)
+        first = registry.resolve_sheet(
+            "qms_material_receipt", "2026-09-11/原料入库单资料.xls", "Test",
+            layouts[0]["raw_headers"],
+        )
+        second = registry.resolve_sheet(
+            "qms_material_receipt", "2026-09-14/原料入库单资料.xls", "Test",
+            layouts[1]["raw_headers"],
+        )
+        self.assertEqual(first[1], second[1])
+        sync.QmsDatabaseClient._validate_erp_field_definitions(
+            "qms_material_receipt", {field.database_column: field for field in first},
+        )
+
+    def test_daily_code_layout_flows_through_source_scan(self):
+        field = sync.ErpFieldDefinition(
+            "qms_material_receipt", "原料入库单资料.xls.xls", "Test",
+            "入库单号", "入库单号", "erp_receipt_no",
+            "erp_入库单号", "Excel列名：入库单号", 1,
+        )
+        registry = sync.ErpFieldRegistry([field], [{
+            "source_file": "原料入库单资料.xls",
+            "table_name": "qms_material_receipt",
+            "raw_headers": ["ylr_bh"],
+            "canonical_headers": ["入库单号"],
+            "database_columns": ["erp_receipt_no"],
+        }])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            daily = root / "2026-09-11"
+            daily.mkdir()
+            workbook = Workbook()
+            workbook.active.title = "原料入库单资料"
+            workbook.active.append(["ylr_bh"])
+            workbook.active.append(["R-001"])
+            workbook.save(daily / "原料入库单资料.xlsx")
+            workbook.close()
+            with patch.object(sync, "load_erp_field_registry", return_value=registry):
+                pairs = list(sync.iter_all_source_records(
+                    {"source_directory": str(root)}, lambda _: None, sync.SourceScanStats(),
+                ))
+        raw, payload = pairs[0]
+        self.assertIsNone(payload)
+        self.assertEqual(raw.business_key, "入库单号:R-001#行2")
+        self.assertEqual(raw.field_values, {"erp_receipt_no": "R-001"})
+
+    def test_daily_code_layout_identifies_work_order_headers(self):
+        registry = sync.ErpFieldRegistry([], [{
+            "source_file": "生产指示资料.xls",
+            "table_name": "qms_work_order",
+            "raw_headers": ["shch_bh", "pingm_bh"],
+            "canonical_headers": ["生产指令号", "厂内编号"],
+            "database_columns": ["erp_production_order_no", "erp_internal_product_no"],
+        }])
+        self.assertTrue(sync.is_work_order_sheet(
+            registry.canonical_headers_for("2026-09-11/生产指示资料.xls",
+                                           ["shch_bh", "pingm_bh"])
+        ))
+
+    def test_xls_without_codepage_decodes_gbk_and_preserves_partial_bytes(self):
+        encoded = "江西广臻".encode("gbk").decode("latin1")
+        warnings = [0]
+        self.assertEqual(sync.decode_erp_xls_cell(encoded, "iso-8859-1", warnings), "江西广臻")
+        self.assertEqual(sync.decode_erp_xls_cell("\xbb", "iso-8859-1", warnings), "\\xbb")
+        self.assertEqual(warnings, [1])
+
+    def test_oversized_biff5_customer_part_sheet_uses_reviewed_row_limit(self):
+        workbook = Mock(biff_version=50)
+        workbook.sheet_names.return_value = ["客户料号资料"]
+        workbook._position = 0
+        workbook._sh_abs_posn = [128]
+        workbook._sheet_names = ["客户料号资料"]
+        workbook._sheet_list = [None]
+        sheet = Mock(utter_max_rows=16384)
+        with patch.object(sync.xlrd, "open_workbook", return_value=workbook), \
+                patch.object(sync.xlrd.sheet, "Sheet", return_value=sheet):
+            self.assertIs(sync.open_erp_xls(Path("客户料号资料.xls")), workbook)
+        self.assertEqual(sheet.utter_max_rows, 65536)
+        sheet.read.assert_called_once_with(workbook)
+        self.assertIs(workbook._sheet_list[0], sheet)
+
+    def test_daily_xls_scan_decodes_gbk_and_logs_partial_cell(self):
+        fields = [sync.ErpFieldDefinition(
+            "qms_purchase_order", "采购订单资料.xls.xls", "Test",
+            header, header, column, sync.legacy_database_column_name(header),
+            sync.erp_column_comment(header), index,
+        ) for index, (header, column) in enumerate([
+            ("采购单号", "erp_purchase_order_no"),
+            ("厂商", "erp_supplier"),
+        ], 1)]
+        registry = sync.ErpFieldRegistry(fields, [{
+            "source_file": "采购订单资料.xls",
+            "table_name": "qms_purchase_order",
+            "raw_headers": ["caig_bh", "chsh_j"],
+            "canonical_headers": ["采购单号", "厂商"],
+            "database_columns": ["erp_purchase_order_no", "erp_supplier"],
+        }])
+        sheet_name = "采购订单资料".encode("gbk").decode("latin1")
+        supplier = "诚越".encode("gbk").decode("latin1")
+        sheet = Mock(nrows=2)
+        sheet.row_values.side_effect = lambda row: (
+            ["caig_bh", "chsh_j"] if row == 0 else ["PO-1", supplier + "\xbb"]
+        )
+        sheet.cell_type.return_value = sync.xlrd.XL_CELL_TEXT
+        workbook = Mock(encoding="iso-8859-1", biff_version=80, datemode=0)
+        workbook.sheet_names.return_value = [sheet_name]
+        workbook.sheet_by_name.return_value = sheet
+        root = Path("D:/daily")
+        messages = []
+        with patch.object(sync.xlrd, "open_workbook", return_value=workbook), \
+                patch.object(sync, "load_erp_field_registry", return_value=registry):
+            pairs = list(sync.iter_all_source_records(
+                {"source_directory": str(root)}, messages.append, sync.SourceScanStats(),
+                source_directory=root, selected_files=[root / "采购订单资料.xls"],
+            ))
+        raw, _ = pairs[0]
+        self.assertEqual(raw.field_values["erp_supplier"], "诚越\\xbb")
+        self.assertIn("1", " ".join(messages))
+
     def test_generator_names_new_gy_receipt_business_headers(self):
         generator = importlib.import_module("generate_erp_field_registry")
         self.assertEqual(
@@ -33,6 +216,22 @@ class ErpFieldRegistryTests(unittest.TestCase):
             generator.english_column_name("订购内容", "订购内容", 99),
             "erp_order_content",
         )
+
+    def test_generator_names_reviewed_daily_export_headers(self):
+        generator = importlib.import_module("generate_erp_field_registry")
+        expected = {
+            "合计金额": "erp_total_amount",
+            "模具费": "erp_mold_fee",
+            "测试费": "erp_testing_fee",
+            "工程费": "erp_engineering_fee",
+            "菲林费": "erp_film_fee",
+            "其它费": "erp_other_fee",
+            "入库面积(平方米)": "erp_receipt_area_square_meters",
+            "预投率": "erp_planned_material_input_rate",
+        }
+        for header, column in expected.items():
+            with self.subTest(header=header):
+                self.assertEqual(generator.english_column_name(header, header, 1), column)
 
     def test_registry_merge_preserves_reviewed_names_and_absent_sources(self):
         generator = importlib.import_module("generate_erp_field_registry")
@@ -51,12 +250,19 @@ class ErpFieldRegistryTests(unittest.TestCase):
         )
         merged = generator.merge_registry_data(
             {"schema_version": 1, "fields": [asdict(current)], "collision_resolutions": []},
-            sync.ErpFieldRegistry([absent, previous]),
+            sync.ErpFieldRegistry([absent, previous], [{
+                "source_file": "原料入库单资料.xls",
+                "table_name": "qms_material_receipt",
+                "raw_headers": ["caig_bh"],
+                "canonical_headers": ["采购单号"],
+                "database_columns": ["erp_reviewed_purchase_order_no"],
+            }]),
         )
         self.assertEqual(merged["fields"][0], asdict(absent))
         self.assertEqual(merged["fields"][1]["database_column"], previous.database_column)
         self.assertEqual(merged["fields"][1]["column_index"], 5)
         self.assertEqual(merged["fields"][1]["source_file"], previous.source_file)
+        self.assertEqual(merged["source_layouts"][0]["raw_headers"], ["caig_bh"])
 
     def test_gy_material_receipt_export_headers_resolve(self):
         fixture = json.loads(GY_RECEIPT_HEADERS.read_text(encoding="utf-8"))

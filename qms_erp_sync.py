@@ -659,6 +659,44 @@ class DirectoryChangeMonitor:
         return current != self.last_successful_fingerprint
 
 
+def open_erp_xls(path: Path):
+    """Read ERP XLS, including the known oversized BIFF5 customer-part export."""
+    workbook = xlrd.open_workbook(str(path), on_demand=True)
+    if (workbook.biff_version == 50
+            and canonical_source_file_name(path.name) == canonical_source_file_name("客户料号资料.xls")):
+        try:
+            if len(workbook.sheet_names()) != 1:
+                raise SyncError(f"旧版客户料号文件工作表数量异常：{path}")
+            # This exporter writes up to 65,535 rows while declaring BIFF5.
+            # Build only this one known sheet with BIFF8's row ceiling; leave
+            # xlrd's BIFF5 decoding rules otherwise unchanged.
+            workbook._position = workbook._sh_abs_posn[0]
+            workbook.getbof(xlrd.biffh.XL_WORKSHEET)
+            sheet = xlrd.sheet.Sheet(
+                workbook, workbook._position, workbook._sheet_names[0], 0,
+            )
+            sheet.utter_max_rows = 65536
+            sheet.read(workbook)
+            workbook._sheet_list[0] = sheet
+        except Exception:
+            workbook.release_resources()
+            raise
+    return workbook
+
+
+def decode_erp_xls_cell(value: Any, encoding: str, warnings: Optional[List[int]] = None) -> Any:
+    """Decode no-CODEPAGE ERP text, visibly escaping truncated GBK bytes."""
+    if encoding != "iso-8859-1" or not isinstance(value, str):
+        return value
+    raw = value.encode("latin1")
+    try:
+        return raw.decode("gbk")
+    except UnicodeDecodeError:
+        if warnings is not None:
+            warnings[0] += 1
+        return raw.decode("gbk", errors="backslashreplace")
+
+
 def open_excel_header(path: Path) -> List[str]:
     lower_name = path.name.lower()
     if lower_name.endswith(".xlsx"):
@@ -668,10 +706,11 @@ def open_excel_header(path: Path) -> List[str]:
             return [as_text(value) for value in next(sheet.iter_rows(values_only=True), ())]
         finally:
             workbook.close()
-    workbook = xlrd.open_workbook(str(path), on_demand=True)
+    workbook = open_erp_xls(path)
     try:
         sheet = workbook.sheet_by_index(0)
-        return [as_text(value) for value in sheet.row_values(0)] if sheet.nrows else []
+        return [as_text(decode_erp_xls_cell(value, workbook.encoding))
+                for value in sheet.row_values(0)] if sheet.nrows else []
     finally:
         workbook.release_resources()
 
@@ -710,15 +749,17 @@ def iter_excel_rows(path: Path) -> Tuple[int, Iterable[Dict[str, Any]]]:
 
         return 0, rows()
 
-    workbook = xlrd.open_workbook(str(path), on_demand=True)
+    workbook = open_erp_xls(path)
     sheet = workbook.sheet_by_index(0)
-    headers = [normalize_header(item) for item in sheet.row_values(0)] if sheet.nrows else []
+    headers = [normalize_header(decode_erp_xls_cell(item, workbook.encoding))
+               for item in sheet.row_values(0)] if sheet.nrows else []
     datemode = workbook.datemode
 
     def rows() -> Iterable[Dict[str, Any]]:
         try:
             for row_index in range(1, sheet.nrows):
-                values_row = sheet.row_values(row_index)
+                values_row = [decode_erp_xls_cell(value, workbook.encoding)
+                              for value in sheet.row_values(row_index)]
                 yield {headers[index]: values_row[index] if index < len(values_row) else None for index in range(len(headers)) if headers[index]}
         finally:
             workbook.release_resources()
@@ -856,10 +897,14 @@ def canonical_source_file_name(source_file: str) -> str:
 class ErpFieldRegistry:
     """Validated source-scoped mappings; no dynamic fallback is permitted."""
 
-    def __init__(self, fields: Iterable[ErpFieldDefinition]) -> None:
+    def __init__(
+        self, fields: Iterable[ErpFieldDefinition],
+        source_layouts: Iterable[Mapping[str, Any]] = (),
+    ) -> None:
         definitions = tuple(fields)
         scopes = {}
         by_position = {}
+        by_target = {}
         targets = set()
         positions = set()
         for field in definitions:
@@ -891,11 +936,92 @@ class ErpFieldRegistry:
                 raise SyncError(f"字段注册表目标字段冲突：{target}")
             scopes[scope] = field
             by_position[position] = field
+            by_target[target] = field
             targets.add(target)
             positions.add(position)
         self.fields = definitions
         self._by_scope = MappingProxyType(scopes)
         self._by_position = MappingProxyType(by_position)
+        self._by_target = MappingProxyType(by_target)
+        layouts = {}
+        new_target_comments = {}
+        new_target_sources = {}
+        for source_layout in source_layouts:
+            if not isinstance(source_layout, dict):
+                raise SyncError("字段注册表增量表头版本格式错误。")
+            source_file = source_layout.get("source_file")
+            table_name = source_layout.get("table_name")
+            raw_headers = source_layout.get("raw_headers")
+            canonical_headers = source_layout.get("canonical_headers", raw_headers)
+            database_columns = source_layout.get("database_columns")
+            if (not isinstance(source_file, str) or not source_file
+                    or table_name not in ERP_FIELD_TABLES
+                    or not all(isinstance(item, list) for item in
+                               (raw_headers, canonical_headers, database_columns))
+                    or not raw_headers
+                    or not (len(raw_headers) == len(canonical_headers) == len(database_columns))
+                    or not all(item is None or isinstance(item, (str, int, float, bool))
+                               for item in raw_headers + canonical_headers)
+                    or not all(isinstance(item, str) and ERP_FIELD_NAME_PATTERN.fullmatch(item)
+                               for item in database_columns)
+                    or len(set(database_columns)) != len(database_columns)):
+                raise SyncError(f"字段注册表增量表头版本格式错误：{source_file}")
+            key = (canonical_source_file_name(source_file), tuple(raw_headers))
+            if key in layouts:
+                raise SyncError(f"字段注册表增量表头版本重复：{source_file}")
+            for header, column in zip(canonical_headers, database_columns):
+                if (table_name, column) not in by_target:
+                    target = (table_name, column)
+                    source = excel_header_identity(header)
+                    comment = erp_column_comment(source)
+                    if target in new_target_comments and new_target_comments[target] != comment:
+                        raise SyncError(f"字段注册表增量字段语义冲突：{target}")
+                    new_target_comments[target] = comment
+                    new_target_sources.setdefault(target, (source_file, source))
+            layouts[key] = source_layout
+        self.source_layouts = tuple(layouts.values())
+        self._source_layouts = MappingProxyType(layouts)
+        extra_fields = {}
+        extra_positions = {}
+        for (table_name, column), (source_file, source) in sorted(new_target_sources.items()):
+            position_key = (table_name, canonical_source_file_name(source_file))
+            index = extra_positions.get(position_key, 0) + 1
+            extra_positions[position_key] = index
+            unique = f"{source}__{column}"
+            extra_fields[(table_name, column)] = ErpFieldDefinition(
+                table_name, source_file, "增量字段", source, unique, column,
+                legacy_database_column_name(unique), new_target_comments[(table_name, column)], index,
+            )
+        self._layout_extra_fields = MappingProxyType(extra_fields)
+
+    def _matched_layout(self, source_file: str, raw_headers: Sequence[Any]) -> Optional[Mapping[str, Any]]:
+        if not all(header is None or isinstance(header, (str, int, float, bool))
+                   for header in raw_headers):
+            return None
+        return self._source_layouts.get((canonical_source_file_name(source_file), tuple(raw_headers)))
+
+    def canonical_headers_for(self, source_file: str, raw_headers: Sequence[Any]) -> List[Any]:
+        layout = self._matched_layout(source_file, raw_headers)
+        return list(layout.get("canonical_headers", raw_headers)) if layout else list(raw_headers)
+
+    def resolve_sheet(
+        self, table_name: str, source_file: str, sheet_name: str, raw_headers: Sequence[Any],
+    ) -> List[ErpFieldDefinition]:
+        layout = self._matched_layout(source_file, raw_headers)
+        if layout is None:
+            return [
+                self.resolve(table_name, source_file, sheet_name,
+                             excel_header_identity(header), unique, index)
+                for index, (header, unique) in enumerate(
+                    zip(raw_headers, unique_headers(raw_headers)), 1)
+            ]
+        if layout["table_name"] != table_name:
+            raise SyncError(f"字段注册表增量表头目标表不一致：{source_file} / {sheet_name}")
+        return [
+            self._by_target.get((table_name, column))
+            or self._layout_extra_fields[(table_name, column)]
+            for column in layout["database_columns"]
+        ]
 
     def resolve(
         self, table_name: str, source_file: str, sheet_name: str,
@@ -941,7 +1067,10 @@ def load_erp_field_registry(path: Optional[Path] = None) -> ErpFieldRegistry:
         if (not isinstance(data, dict) or data.get("schema_version") != 1
                 or not isinstance(data.get("fields"), list) or not data["fields"]):
             raise ValueError("需要 schema_version=1 和非空 fields 列表")
-        return ErpFieldRegistry(ErpFieldDefinition(**entry) for entry in data["fields"])
+        return ErpFieldRegistry(
+            (ErpFieldDefinition(**entry) for entry in data["fields"]),
+            data.get("source_layouts", ()),
+        )
     except (OSError, ValueError, TypeError, KeyError) as exc:
         raise SyncError(f"字段注册表读取失败：{registry_path}；{exc}。请检查或重新生成注册表。") from exc
 
@@ -1043,16 +1172,13 @@ def iter_all_source_records(
                         callback(f"  工作表：{sheet.title}（0 条数据，跳过字段写入）")
                         continue
                     raw_headers = unique_headers(raw_header_values)
-                    normalized_headers = [normalize_header(value) for value in raw_header_values]
-                    is_work_order = map_work_orders and is_work_order_sheet(raw_header_values)
+                    reviewed_headers = registry.canonical_headers_for(relative_file, raw_header_values)
+                    normalized_headers = [normalize_header(value) for value in reviewed_headers]
+                    is_work_order = map_work_orders and is_work_order_sheet(reviewed_headers)
                     target_table = source_table_name(relative_file, sheet.title, is_work_order)
-                    definitions = [
-                        registry.resolve(
-                            target_table or "qms_work_order", relative_file, sheet.title,
-                            excel_header_identity(value), raw_headers[index], index + 1,
-                        )
-                        for index, value in enumerate(raw_header_values)
-                    ]
+                    definitions = registry.resolve_sheet(
+                        target_table or "qms_work_order", relative_file, sheet.title, raw_header_values,
+                    )
                     callback(
                         f"  工作表：{sheet.title}（{'工单映射 + 实体字段写入' if is_work_order else '实体字段写入'}，"
                         f"目标表：{target_table or 'qms_work_order / qms_production_batch'}）"
@@ -1077,34 +1203,39 @@ def iter_all_source_records(
             continue
 
         try:
-            workbook = xlrd.open_workbook(str(path), on_demand=True)
+            workbook = open_erp_xls(path)
         except Exception as exc:
             raise SyncError(f"无法打开 Excel 文件 {relative_file}：{exc}") from exc
         try:
-            for sheet_name in workbook.sheet_names():
-                sheet = workbook.sheet_by_name(sheet_name)
+            decode_warnings = [0]
+            for raw_sheet_name in workbook.sheet_names():
+                sheet = workbook.sheet_by_name(raw_sheet_name)
+                sheet_name = decode_erp_xls_cell(raw_sheet_name, workbook.encoding, decode_warnings)
                 stats.sheets_scanned += 1
-                raw_header_values = sheet.row_values(0) if sheet.nrows else []
+                raw_header_values = [
+                    decode_erp_xls_cell(value, workbook.encoding, decode_warnings)
+                    for value in sheet.row_values(0)
+                ] if sheet.nrows else []
                 if sheet.nrows <= 1:
                     callback(f"  工作表：{sheet_name}（0 条数据，跳过字段写入）")
                     continue
                 raw_headers = unique_headers(raw_header_values)
-                normalized_headers = [normalize_header(value) for value in raw_header_values]
-                is_work_order = map_work_orders and is_work_order_sheet(raw_header_values)
+                reviewed_headers = registry.canonical_headers_for(relative_file, raw_header_values)
+                normalized_headers = [normalize_header(value) for value in reviewed_headers]
+                is_work_order = map_work_orders and is_work_order_sheet(reviewed_headers)
                 target_table = source_table_name(relative_file, sheet_name, is_work_order)
-                definitions = [
-                    registry.resolve(
-                        target_table or "qms_work_order", relative_file, sheet_name,
-                        excel_header_identity(value), raw_headers[index], index + 1,
-                    )
-                    for index, value in enumerate(raw_header_values)
-                ]
+                definitions = registry.resolve_sheet(
+                    target_table or "qms_work_order", relative_file, sheet_name, raw_header_values,
+                )
                 callback(
                     f"  工作表：{sheet_name}（{'工单映射 + 实体字段写入' if is_work_order else '实体字段写入'}，"
                     f"目标表：{target_table or 'qms_work_order / qms_production_batch'}）"
                 )
                 for zero_based_row in range(1, sheet.nrows):
-                    values_row = sheet.row_values(zero_based_row)
+                    values_row = [
+                        decode_erp_xls_cell(value, workbook.encoding, decode_warnings)
+                        for value in sheet.row_values(zero_based_row)
+                    ]
                     row = {
                         normalized_headers[index]: values_row[index] if index < len(values_row) else None
                         for index in range(len(normalized_headers)) if normalized_headers[index]
@@ -1123,6 +1254,11 @@ def iter_all_source_records(
                         relative_file, sheet_name, zero_based_row + 1, row, raw_data,
                         workbook.datemode, is_work_order, stats, target_table, definitions,
                     )
+            if decode_warnings[0]:
+                callback(
+                    f"  {relative_file} 有 {decode_warnings[0]:,} 个文本单元格的 GBK 字节被源文件截断；"
+                    "无法还原的字节已保留为 \\x.. 标记。"
+                )
         finally:
             workbook.release_resources()
 
