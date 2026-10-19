@@ -22,7 +22,8 @@ from typing import List
 from generate_field_mapping_data import SOURCE_DIRECTORY, iter_workbook_headers
 from qms_erp_sync import (
     ErpFieldDefinition, ErpFieldRegistry, SyncError, excel_header_identity, erp_column_comment,
-    is_work_order_sheet, legacy_database_column_name, source_table_name, unique_headers,
+    canonical_source_file_name, is_work_order_sheet, legacy_database_column_name,
+    load_erp_field_registry, source_table_name, unique_headers,
 )
 
 
@@ -185,6 +186,12 @@ BUSINESS_TERMS = {
     "四仓": "warehouse_4", "一厂": "factory_1", "二厂": "factory_2",
     "五厂": "factory_5", "六厂": "factory_6", "七厂": "factory_7",
     "铜": "copper", "仓": "warehouse",
+    "验收": "acceptance", "结果": "result", "打折": "discount",
+    "扣款": "deduction", "判定": "determination", "额外": "extra",
+    "免检": "inspection_exempt", "还出": "return_out",
+    "借出": "loan_out", "借入": "loan_in", "延期": "extension",
+    "报关核销": "customs_writeoff", "报关": "customs_declaration",
+    "订购内容": "order_content",
     "%": "percent", "‰": "per_mille", "≥": "minimum",
 }
 ORDERED_TERMS = sorted(BUSINESS_TERMS, key=lambda term: (-len(term), term))
@@ -276,6 +283,51 @@ def build_registry(source_directory: Path = SOURCE_DIRECTORY) -> dict:
     return {"schema_version": 1, "fields": [asdict(field) for field in resolved], "collision_resolutions": collisions}
 
 
+def merge_registry_data(generated: dict, base_registry: ErpFieldRegistry) -> dict:
+    """Preserve reviewed names and sources absent from the current export."""
+    def scope(field: ErpFieldDefinition) -> tuple:
+        return (field.table_name, canonical_source_file_name(field.source_file),
+                field.sheet_name, field.excel_unique_header)
+
+    previous_by_scope = {scope(field): field for field in base_registry.fields}
+    generated_by_file = {}
+    for row in generated["fields"]:
+        field = ErpFieldDefinition(**row)
+        previous = previous_by_scope.get(scope(field))
+        if previous and previous.excel_source_header == field.excel_source_header:
+            field = replace(
+                field, database_column=previous.database_column,
+                source_file=previous.source_file,
+            )
+        generated_by_file.setdefault(canonical_source_file_name(field.source_file), []).append(field)
+    merged = []
+    emitted_files = set()
+    for field in base_registry.fields:
+        source = canonical_source_file_name(field.source_file)
+        if source in generated_by_file:
+            if source not in emitted_files:
+                merged.extend(generated_by_file[source])
+                emitted_files.add(source)
+        else:
+            merged.append(field)
+    for source, fields in generated_by_file.items():
+        if source not in emitted_files:
+            merged.extend(fields)
+    ErpFieldRegistry(merged)
+    resolutions = []
+    for field in merged:
+        base_name = english_column_name(
+            field.excel_source_header, field.excel_unique_header, field.column_index)
+        if field.database_column != base_name:
+            resolutions.append({
+                "table_name": field.table_name, "source_file": field.source_file,
+                "sheet_name": field.sheet_name, "excel_unique_header": field.excel_unique_header,
+                "base_column": base_name, "database_column": field.database_column,
+            })
+    return {"schema_version": 1, "fields": [asdict(field) for field in merged],
+            "collision_resolutions": resolutions}
+
+
 def registry_text(data: dict) -> str:
     return json.dumps(data, ensure_ascii=False, indent=2) + "\n"
 
@@ -284,9 +336,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-directory", type=Path, default=SOURCE_DIRECTORY)
     parser.add_argument("--output", type=Path, default=OUTPUT)
+    parser.add_argument("--base-registry", type=Path,
+                        help="Preserve reviewed columns and absent source files from this registry")
     parser.add_argument("--check", action="store_true", help="Read-only comparison with the reviewed JSON")
     args = parser.parse_args()
     data = build_registry(args.source_directory)
+    if args.base_registry:
+        data = merge_registry_data(data, load_erp_field_registry(args.base_registry))
     if not data["fields"]:
         raise SyncError("字段注册表未找到 Excel 表头，拒绝写入空注册表。")
     text = registry_text(data)

@@ -4,7 +4,7 @@ import json
 import tempfile
 import unittest
 import importlib
-from dataclasses import FrozenInstanceError, replace
+from dataclasses import FrozenInstanceError, asdict, replace
 from pathlib import Path
 from decimal import Decimal
 from unittest.mock import patch, Mock
@@ -15,13 +15,77 @@ import qms_erp_sync as sync
 
 
 REGISTRY_PATH = Path(__file__).resolve().parents[1] / "erp_field_registry.json"
+GY_RECEIPT_HEADERS = Path(__file__).resolve().parent / "fixtures" / "gy_material_receipt_20261019_headers.json"
 
 
 class ErpFieldRegistryTests(unittest.TestCase):
+    def test_generator_names_new_gy_receipt_business_headers(self):
+        generator = importlib.import_module("generate_erp_field_registry")
+        self.assertEqual(
+            generator.english_column_name("验收结果", "验收结果", 4),
+            "erp_acceptance_result",
+        )
+        self.assertEqual(
+            generator.english_column_name("报关核销", "报关核销", 79),
+            "erp_customs_writeoff",
+        )
+        self.assertEqual(
+            generator.english_column_name("订购内容", "订购内容", 99),
+            "erp_order_content",
+        )
+
+    def test_registry_merge_preserves_reviewed_names_and_absent_sources(self):
+        generator = importlib.import_module("generate_erp_field_registry")
+        previous = sync.ErpFieldDefinition(
+            "qms_material_receipt", "原料入库单资料.xls.xls", "Test",
+            "采购单号", "采购单号", "erp_reviewed_purchase_order_no",
+            "erp_采购单号", "Excel列名：采购单号", 4,
+        )
+        absent = sync.ErpFieldDefinition(
+            "qms_engineering_data", "工程资料资料.xls", "Test",
+            "编号", "编号", "erp_engineering_no", "erp_编号", "Excel列名：编号", 1,
+        )
+        current = replace(
+            previous, source_file="原料入库单资料.XLS.XLS",
+            database_column="erp_purchase_order_no", column_index=5,
+        )
+        merged = generator.merge_registry_data(
+            {"schema_version": 1, "fields": [asdict(current)], "collision_resolutions": []},
+            sync.ErpFieldRegistry([absent, previous]),
+        )
+        self.assertEqual(merged["fields"][0], asdict(absent))
+        self.assertEqual(merged["fields"][1]["database_column"], previous.database_column)
+        self.assertEqual(merged["fields"][1]["column_index"], 5)
+        self.assertEqual(merged["fields"][1]["source_file"], previous.source_file)
+
+    def test_gy_material_receipt_export_headers_resolve(self):
+        fixture = json.loads(GY_RECEIPT_HEADERS.read_text(encoding="utf-8"))
+        headers = fixture["headers"]
+        self.assertEqual(len(headers), 103)
+        registry = sync.load_erp_field_registry(REGISTRY_PATH)
+        columns = {}
+        for index, (source, unique) in enumerate(zip(headers, sync.unique_headers(headers)), 1):
+            field = registry.resolve(
+                "qms_material_receipt", fixture["source_file"], fixture["sheet_name"],
+                sync.excel_header_identity(source), unique, index,
+            )
+            columns[index] = field.database_column
+        self.assertEqual(columns[1], "erp_receipt_no")
+        self.assertEqual(columns[4], "erp_acceptance_result")
+        self.assertEqual(columns[5], "erp_purchase_order_no")
+
     def test_registry_matches_nested_daily_path_and_normalizes_repeated_excel_suffix(self):
         field = sync.ErpFieldDefinition(
             "qms_purchase_order", "采购订单资料.xls.xls", "Test", "采购单号", "采购单号",
             "erp_purchase_order_no", "erp_采购单号", "Excel列名：采购单号", 1,
+        )
+        registry = sync.ErpFieldRegistry([field])
+        self.assertEqual(
+            field,
+            registry.resolve(
+                "qms_purchase_order", "2026-9-17/采购订单资料.XLS", "Test",
+                "采购单号", "采购单号", 1,
+            ),
         )
 
     def test_registry_accepts_daily_export_collapsing_a_leading_backslash(self):
@@ -37,15 +101,6 @@ class ErpFieldRegistryTests(unittest.TestCase):
                 "\\库存面积", "\\库存面积", 24,
             ),
         )
-        registry = sync.ErpFieldRegistry([field])
-        self.assertEqual(
-            field,
-            registry.resolve(
-                "qms_purchase_order", "2026-9-17/采购订单资料.XLS", "Test",
-                "采购单号", "采购单号", 1,
-            ),
-        )
-
     def test_header_identity_preserves_nonblank_strings_and_cell_text_semantics(self):
         for header in ("\r加工方式", "加工方式\r", "\x85加工方式", "加工方式\x85",
                        "\x80加工方式", "加工方式\x7f", "\u2003加工方式\u00a0", "null"):
@@ -378,22 +433,29 @@ class ErpFieldRegistryTests(unittest.TestCase):
         import generate_field_mapping_data as mapping
 
         with tempfile.TemporaryDirectory() as directory:
-            output = Path(directory) / "real-mapping.json"
-            with patch.object(mapping, "OUTPUT", output):
+            root = Path(directory)
+            output = root / "real-mapping.json"
+            fixture = json.loads(GY_RECEIPT_HEADERS.read_text(encoding="utf-8"))
+            workbook = Workbook()
+            workbook.active.title = fixture["sheet_name"]
+            workbook.active.append(fixture["headers"])
+            workbook.save(root / "原料入库单资料.xlsx")
+            workbook.close()
+            with patch.object(mapping, "SOURCE_DIRECTORY", root), patch.object(mapping, "OUTPUT", output):
                 mapping.main()
 
             rows = json.loads(output.read_text(encoding="utf-8"))["mapping_rows"]
-            purchase_order_no = next(
+            acceptance_result = next(
                 row for row in rows
-                if row["Excel 文件"] == "采购订单资料.xls.xls"
+                if row["Excel 文件"] == "原料入库单资料.xlsx"
                 and row["工作表"] == "Test"
-                and row["Excel 原始列名"] == "采购单号"
+                and row["Excel 原始列名"] == "验收结果"
             )
-            self.assertRegex(purchase_order_no["英文数据库字段"], r"^erp_[a-z][a-z0-9_]*$")
-            self.assertEqual(purchase_order_no["数据库字段注释"], "Excel列名：采购单号")
-            self.assertTrue(purchase_order_no["旧数据库字段"].startswith("erp_"))
+            self.assertEqual(acceptance_result["英文数据库字段"], "erp_acceptance_result")
+            self.assertEqual(acceptance_result["数据库字段注释"], "Excel列名：验收结果")
+            self.assertEqual(acceptance_result["旧数据库字段"], "erp_验收结果")
             self.assertNotEqual(
-                purchase_order_no["英文数据库字段"], purchase_order_no["旧数据库字段"])
+                acceptance_result["英文数据库字段"], acceptance_result["旧数据库字段"])
 
 
 if __name__ == "__main__":

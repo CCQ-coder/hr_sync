@@ -1786,31 +1786,211 @@ SELECT 'qms_material_issue' AS table_name, 'erp_领料申请编号' AS old_field
 UNION ALL
 SELECT 'qms_material_issue' AS table_name, 'erp_领料目的' AS old_field, 'erp_material_issue_purpose' AS new_field, 'Excel列名：领料目的' AS comment, 'change' AS migration_kind
 UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_不含税单价' AS old_field, 'erp_tax_exclusive_unit_price' AS new_field, 'Excel列名：不含税单价' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_不含税金额' AS old_field, 'erp_tax_exclusive_amount' AS new_field, 'Excel列名：不含税金额' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_仓位' AS old_field, 'erp_bin' AS new_field, 'Excel列名：仓位' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_仓库名称' AS old_field, 'erp_warehouse_name' AS new_field, 'Excel列名：仓库名称' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_保质天数' AS old_field, 'erp_shelf_life_days' AS new_field, 'Excel列名：保质天数' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_借入部门名称' AS old_field, 'erp_loan_in_department_name' AS new_field, 'Excel列名：借入部门名称' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_借入部门编号' AS old_field, 'erp_loan_in_department_no' AS new_field, 'Excel列名：借入部门编号' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_借出单号' AS old_field, 'erp_loan_out_document_no' AS new_field, 'Excel列名：借出单号' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_停止还出' AS old_field, 'erp_stop_return_out' AS new_field, 'Excel列名：停止还出' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_停止还出人' AS old_field, 'erp_stop_return_out_person' AS new_field, 'Excel列名：停止还出人' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_停止还出备注' AS old_field, 'erp_stop_return_out_remarks' AS new_field, 'Excel列名：停止还出备注' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_停止还出日期' AS old_field, 'erp_stop_return_out_date' AS new_field, 'Excel列名：停止还出日期' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_停止领料人' AS old_field, 'erp_stop_material_recipient' AS new_field, 'Excel列名：停止领料人' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_停止领料日期' AS old_field, 'erp_stop_material_issue_date' AS new_field, 'Excel列名：停止领料日期' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_入帐日期' AS old_field, 'erp_posting_date' AS new_field, 'Excel列名：入帐日期' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_入帐月份' AS old_field, 'erp_posting_month' AS new_field, 'Excel列名：入帐月份' AS comment, 'change' AS migration_kind
+UNION ALL
 SELECT 'qms_material_receipt' AS table_name, 'erp_入库单号' AS old_field, 'erp_receipt_no' AS new_field, 'Excel列名：入库单号' AS comment, 'change' AS migration_kind
 UNION ALL
 SELECT 'qms_material_receipt' AS table_name, 'erp_入库日期' AS old_field, 'erp_receipt_date' AS new_field, 'Excel列名：入库日期' AS comment, 'change' AS migration_kind
 UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_入库明细编号' AS old_field, 'erp_receipt_detail_no' AS new_field, 'Excel列名：入库明细编号' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_入库类别' AS old_field, 'erp_receipt_category' AS new_field, 'Excel列名：入库类别' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_入库重量' AS old_field, 'erp_receipt_weight' AS new_field, 'Excel列名：入库重量' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_入库面积' AS old_field, 'erp_receipt_area' AS new_field, 'Excel列名：入库面积' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_其他mc3' AS old_field, 'erp_mc_3' AS new_field, 'Excel列名：其他mc3' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_其他mc4' AS old_field, 'erp_mc_4' AS new_field, 'Excel列名：其他mc4' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_到期日期' AS old_field, 'erp_expiry_date' AS new_field, 'Excel列名：到期日期' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_单价' AS old_field, 'erp_unit_price' AS new_field, 'Excel列名：单价' AS comment, 'change' AS migration_kind
+UNION ALL
 SELECT 'qms_material_receipt' AS table_name, 'erp_单位' AS old_field, 'erp_unit' AS new_field, 'Excel列名：单位' AS comment, 'change' AS migration_kind
 UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_单号' AS old_field, 'erp_document_no' AS new_field, 'Excel列名：单号' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_单重' AS old_field, 'erp_unit_weight' AS new_field, 'Excel列名：单重' AS comment, 'change' AS migration_kind
+UNION ALL
 SELECT 'qms_material_receipt' AS table_name, 'erp_厂商名称' AS old_field, 'erp_supplier_name' AS new_field, 'Excel列名：厂商名称' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_厂商编号' AS old_field, 'erp_supplier_no' AS new_field, 'Excel列名：厂商编号' AS comment, 'change' AS migration_kind
 UNION ALL
 SELECT 'qms_material_receipt' AS table_name, 'erp_原料名称' AS old_field, 'erp_material_name' AS new_field, 'Excel列名：原料名称' AS comment, 'change' AS migration_kind
 UNION ALL
 SELECT 'qms_material_receipt' AS table_name, 'erp_原料大类' AS old_field, 'erp_raw_material_major_category' AS new_field, 'Excel列名：原料大类' AS comment, 'change' AS migration_kind
 UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_原料小类' AS old_field, 'erp_raw_material_minor_category' AS new_field, 'Excel列名：原料小类' AS comment, 'change' AS migration_kind
+UNION ALL
 SELECT 'qms_material_receipt' AS table_name, 'erp_原料编号' AS old_field, 'erp_material_no' AS new_field, 'Excel列名：原料编号' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_备注' AS old_field, 'erp_remarks' AS new_field, 'Excel列名：备注' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_外发单价' AS old_field, 'erp_outsourcing_unit_price' AS new_field, 'Excel列名：外发单价' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_外发厂商名称' AS old_field, 'erp_outsourcing_supplier_name' AS new_field, 'Excel列名：外发厂商名称' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_外发厂商编号' AS old_field, 'erp_outsourcing_supplier_no' AS new_field, 'Excel列名：外发厂商编号' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_外发币别' AS old_field, 'erp_outsourcing_currency' AS new_field, 'Excel列名：外发币别' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_子类' AS old_field, 'erp_subcategory' AS new_field, 'Excel列名：子类' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_存货类别' AS old_field, 'erp_inventory_category' AS new_field, 'Excel列名：存货类别' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_审核人' AS old_field, 'erp_review_person' AS new_field, 'Excel列名：审核人' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_审核日期' AS old_field, 'erp_review_date' AS new_field, 'Excel列名：审核日期' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_审核签名' AS old_field, 'erp_review_signature' AS new_field, 'Excel列名：审核签名' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_工厂' AS old_field, 'erp_factory' AS new_field, 'Excel列名：工厂' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_币别' AS old_field, 'erp_currency' AS new_field, 'Excel列名：币别' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_延期天数' AS old_field, 'erp_extension_days' AS new_field, 'Excel列名：延期天数' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_成本单价' AS old_field, 'erp_cost_unit_price' AS new_field, 'Excel列名：成本单价' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_成本金额' AS old_field, 'erp_cost_amount' AS new_field, 'Excel列名：成本金额' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_打折' AS old_field, 'erp_discount' AS new_field, 'Excel列名：打折' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_打折单价' AS old_field, 'erp_discount_unit_price' AS new_field, 'Excel列名：打折单价' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_扣款' AS old_field, 'erp_deduction' AS new_field, 'Excel列名：扣款' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_报关单号' AS old_field, 'erp_customs_declaration_document_no' AS new_field, 'Excel列名：报关单号' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_报关核销' AS old_field, 'erp_customs_writeoff' AS new_field, 'Excel列名：报关核销' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_换算标准' AS old_field, 'erp_conversion_standard' AS new_field, 'Excel列名：换算标准' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_是否免检' AS old_field, 'erp_is_inspection_exempt' AS new_field, 'Excel列名：是否免检' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_最大安全库存' AS old_field, 'erp_maximum_safety_inventory' AS new_field, 'Excel列名：最大安全库存' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_最小安全库存' AS old_field, 'erp_minimum_safety_inventory' AS new_field, 'Excel列名：最小安全库存' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_有效期' AS old_field, 'erp_valid_until' AS new_field, 'Excel列名：有效期' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_本位币金额' AS old_field, 'erp_local_currency_amount' AS new_field, 'Excel列名：本位币金额' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_本厂采购' AS old_field, 'erp_this_factory_purchase' AS new_field, 'Excel列名：本厂采购' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_本币成本单价' AS old_field, 'erp_local_currency_cost_unit_price' AS new_field, 'Excel列名：本币成本单价' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_本币成本金额' AS old_field, 'erp_local_currency_cost_amount' AS new_field, 'Excel列名：本币成本金额' AS comment, 'change' AS migration_kind
 UNION ALL
 SELECT 'qms_material_receipt' AS table_name, 'erp_本次入库' AS old_field, 'erp_current_receipt' AS new_field, 'Excel列名：本次入库' AS comment, 'change' AS migration_kind
 UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_标准单位' AS old_field, 'erp_standard_unit' AS new_field, 'Excel列名：标准单位' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_标准单位数量' AS old_field, 'erp_standard_unit_quantity' AS new_field, 'Excel列名：标准单位数量' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_检验结果' AS old_field, 'erp_inspection_result' AS new_field, 'Excel列名：检验结果' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_生产批号' AS old_field, 'erp_production_batch_no' AS new_field, 'Excel列名：生产批号' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_生产日期' AS old_field, 'erp_production_date' AS new_field, 'Excel列名：生产日期' AS comment, 'change' AS migration_kind
+UNION ALL
 SELECT 'qms_material_receipt' AS table_name, 'erp_目前库存' AS old_field, 'erp_current_inventory' AS new_field, 'Excel列名：目前库存' AS comment, 'change' AS migration_kind
 UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_目前库存金额' AS old_field, 'erp_current_inventory_amount' AS new_field, 'Excel列名：目前库存金额' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_确认入库数量' AS old_field, 'erp_confirmation_receipt_quantity' AS new_field, 'Excel列名：确认入库数量' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_确认单价' AS old_field, 'erp_confirmation_unit_price' AS new_field, 'Excel列名：确认单价' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_确认数量' AS old_field, 'erp_confirmation_quantity' AS new_field, 'Excel列名：确认数量' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_确认退货数量' AS old_field, 'erp_confirmation_return_quantity' AS new_field, 'Excel列名：确认退货数量' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_税率%' AS old_field, 'erp_tax_rate_percent' AS new_field, 'Excel列名：税率%' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_累计交货量' AS old_field, 'erp_cumulative_delivery_quantity' AS new_field, 'Excel列名：累计交货量' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_累计还出数量' AS old_field, 'erp_cumulative_return_out_quantity' AS new_field, 'Excel列名：累计还出数量' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_累计领料' AS old_field, 'erp_cumulative_material_issue' AS new_field, 'Excel列名：累计领料' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_英文名称' AS old_field, 'erp_english_name' AS new_field, 'Excel列名：英文名称' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_英文规格' AS old_field, 'erp_english_specification' AS new_field, 'Excel列名：英文规格' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_营销模式' AS old_field, 'erp_business_model' AS new_field, 'Excel列名：营销模式' AS comment, 'change' AS migration_kind
+UNION ALL
 SELECT 'qms_material_receipt' AS table_name, 'erp_规格' AS old_field, 'erp_specification' AS new_field, 'Excel列名：规格' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_订购内容' AS old_field, 'erp_order_content' AS new_field, 'Excel列名：订购内容' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_财务签名' AS old_field, 'erp_finance_signature' AS new_field, 'Excel列名：财务签名' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_财务签名人' AS old_field, 'erp_finance_signature_person' AS new_field, 'Excel列名：财务签名人' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_财务签名日期' AS old_field, 'erp_finance_signature_date' AS new_field, 'Excel列名：财务签名日期' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_费用类型' AS old_field, 'erp_expense_type' AS new_field, 'Excel列名：费用类型' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_输入日期' AS old_field, 'erp_entry_date' AS new_field, 'Excel列名：输入日期' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_输入者' AS old_field, 'erp_entered_by' AS new_field, 'Excel列名：输入者' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_退货判定' AS old_field, 'erp_return_determination' AS new_field, 'Excel列名：退货判定' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_退货数量' AS old_field, 'erp_return_quantity' AS new_field, 'Excel列名：退货数量' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_退货确认' AS old_field, 'erp_return_confirmation' AS new_field, 'Excel列名：退货确认' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_送货单号' AS old_field, 'erp_delivery_note_no' AS new_field, 'Excel列名：送货单号' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_部门请购数量' AS old_field, 'erp_department_purchase_requisition_quantity' AS new_field, 'Excel列名：部门请购数量' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_采购下单日期' AS old_field, 'erp_purchase_order_placed_date' AS new_field, 'Excel列名：采购下单日期' AS comment, 'change' AS migration_kind
 UNION ALL
 SELECT 'qms_material_receipt' AS table_name, 'erp_采购单ID' AS old_field, 'erp_purchase_order_id' AS new_field, 'Excel列名：采购单ID' AS comment, 'change' AS migration_kind
 UNION ALL
 SELECT 'qms_material_receipt' AS table_name, 'erp_采购单号' AS old_field, 'erp_purchase_order_no' AS new_field, 'Excel列名：采购单号' AS comment, 'change' AS migration_kind
 UNION ALL
 SELECT 'qms_material_receipt' AS table_name, 'erp_采购数量' AS old_field, 'erp_purchase_quantity' AS new_field, 'Excel列名：采购数量' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_额外费用' AS old_field, 'erp_extra_expense' AS new_field, 'Excel列名：额外费用' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_验收单号' AS old_field, 'erp_acceptance_document_no' AS new_field, 'Excel列名：验收单号' AS comment, 'change' AS migration_kind
+UNION ALL
+SELECT 'qms_material_receipt' AS table_name, 'erp_验收结果' AS old_field, 'erp_acceptance_result' AS new_field, 'Excel列名：验收结果' AS comment, 'change' AS migration_kind
 UNION ALL
 SELECT 'qms_process_output_summary' AS table_name, 'erp_00:00-04:00' AS old_field, 'erp_time_00_00_04_00' AS new_field, 'Excel列名：00:00-04:00' AS comment, 'change' AS migration_kind
 UNION ALL

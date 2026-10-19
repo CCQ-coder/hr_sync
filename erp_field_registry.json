@@ -36,6 +36,17 @@
     },
     {
       "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "验收结果",
+      "excel_unique_header": "验收结果",
+      "database_column": "erp_acceptance_result",
+      "legacy_database_column": "erp_验收结果",
+      "column_comment": "Excel列名：验收结果",
+      "column_index": 4
+    },
+    {
+      "table_name": "qms_material_receipt",
       "source_file": "原料入库单资料.xls.xls",
       "sheet_name": "Test",
       "excel_source_header": "采购单号",
@@ -43,7 +54,7 @@
       "database_column": "erp_purchase_order_no",
       "legacy_database_column": "erp_采购单号",
       "column_comment": "Excel列名：采购单号",
-      "column_index": 4
+      "column_index": 5
     },
     {
       "table_name": "qms_material_receipt",
@@ -54,7 +65,7 @@
       "database_column": "erp_material_no",
       "legacy_database_column": "erp_原料编号",
       "column_comment": "Excel列名：原料编号",
-      "column_index": 5
+      "column_index": 6
     },
     {
       "table_name": "qms_material_receipt",
@@ -65,7 +76,7 @@
       "database_column": "erp_material_name",
       "legacy_database_column": "erp_原料名称",
       "column_comment": "Excel列名：原料名称",
-      "column_index": 6
+      "column_index": 7
     },
     {
       "table_name": "qms_material_receipt",
@@ -76,7 +87,7 @@
       "database_column": "erp_specification",
       "legacy_database_column": "erp_规格",
       "column_comment": "Excel列名：规格",
-      "column_index": 7
+      "column_index": 8
     },
     {
       "table_name": "qms_material_receipt",
@@ -87,7 +98,18 @@
       "database_column": "erp_current_inventory",
       "legacy_database_column": "erp_目前库存",
       "column_comment": "Excel列名：目前库存",
-      "column_index": 8
+      "column_index": 9
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "目前库存金额",
+      "excel_unique_header": "目前库存金额",
+      "database_column": "erp_current_inventory_amount",
+      "legacy_database_column": "erp_目前库存金额",
+      "column_comment": "Excel列名：目前库存金额",
+      "column_index": 10
     },
     {
       "table_name": "qms_material_receipt",
@@ -98,7 +120,18 @@
       "database_column": "erp_purchase_quantity",
       "legacy_database_column": "erp_采购数量",
       "column_comment": "Excel列名：采购数量",
-      "column_index": 9
+      "column_index": 11
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "累计交货量",
+      "excel_unique_header": "累计交货量",
+      "database_column": "erp_cumulative_delivery_quantity",
+      "legacy_database_column": "erp_累计交货量",
+      "column_comment": "Excel列名：累计交货量",
+      "column_index": 12
     },
     {
       "table_name": "qms_material_receipt",
@@ -109,7 +142,18 @@
       "database_column": "erp_current_receipt",
       "legacy_database_column": "erp_本次入库",
       "column_comment": "Excel列名：本次入库",
-      "column_index": 10
+      "column_index": 13
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "退货数量",
+      "excel_unique_header": "退货数量",
+      "database_column": "erp_return_quantity",
+      "legacy_database_column": "erp_退货数量",
+      "column_comment": "Excel列名：退货数量",
+      "column_index": 14
     },
     {
       "table_name": "qms_material_receipt",
@@ -120,7 +164,249 @@
       "database_column": "erp_unit",
       "legacy_database_column": "erp_单位",
       "column_comment": "Excel列名：单位",
-      "column_index": 11
+      "column_index": 15
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "单价",
+      "excel_unique_header": "单价",
+      "database_column": "erp_unit_price",
+      "legacy_database_column": "erp_单价",
+      "column_comment": "Excel列名：单价",
+      "column_index": 16
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "税率%",
+      "excel_unique_header": "税率%",
+      "database_column": "erp_tax_rate_percent",
+      "legacy_database_column": "erp_税率%",
+      "column_comment": "Excel列名：税率%",
+      "column_index": 17
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "不含税单价",
+      "excel_unique_header": "不含税单价",
+      "database_column": "erp_tax_exclusive_unit_price",
+      "legacy_database_column": "erp_不含税单价",
+      "column_comment": "Excel列名：不含税单价",
+      "column_index": 18
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "币别",
+      "excel_unique_header": "币别",
+      "database_column": "erp_currency",
+      "legacy_database_column": "erp_币别",
+      "column_comment": "Excel列名：币别",
+      "column_index": 19
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "本位币金额",
+      "excel_unique_header": "本位币金额",
+      "database_column": "erp_local_currency_amount",
+      "legacy_database_column": "erp_本位币金额",
+      "column_comment": "Excel列名：本位币金额",
+      "column_index": 20
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "生产日期",
+      "excel_unique_header": "生产日期",
+      "database_column": "erp_production_date",
+      "legacy_database_column": "erp_生产日期",
+      "column_comment": "Excel列名：生产日期",
+      "column_index": 21
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "生产批号",
+      "excel_unique_header": "生产批号",
+      "database_column": "erp_production_batch_no",
+      "legacy_database_column": "erp_生产批号",
+      "column_comment": "Excel列名：生产批号",
+      "column_index": 22
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "备注",
+      "excel_unique_header": "备注",
+      "database_column": "erp_remarks",
+      "legacy_database_column": "erp_备注",
+      "column_comment": "Excel列名：备注",
+      "column_index": 23
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "入帐日期",
+      "excel_unique_header": "入帐日期",
+      "database_column": "erp_posting_date",
+      "legacy_database_column": "erp_入帐日期",
+      "column_comment": "Excel列名：入帐日期",
+      "column_index": 24
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "入帐月份",
+      "excel_unique_header": "入帐月份",
+      "database_column": "erp_posting_month",
+      "legacy_database_column": "erp_入帐月份",
+      "column_comment": "Excel列名：入帐月份",
+      "column_index": 25
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "打折",
+      "excel_unique_header": "打折",
+      "database_column": "erp_discount",
+      "legacy_database_column": "erp_打折",
+      "column_comment": "Excel列名：打折",
+      "column_index": 26
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "扣款",
+      "excel_unique_header": "扣款",
+      "database_column": "erp_deduction",
+      "legacy_database_column": "erp_扣款",
+      "column_comment": "Excel列名：扣款",
+      "column_index": 27
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "退货判定",
+      "excel_unique_header": "退货判定",
+      "database_column": "erp_return_determination",
+      "legacy_database_column": "erp_退货判定",
+      "column_comment": "Excel列名：退货判定",
+      "column_index": 28
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "退货确认",
+      "excel_unique_header": "退货确认",
+      "database_column": "erp_return_confirmation",
+      "legacy_database_column": "erp_退货确认",
+      "column_comment": "Excel列名：退货确认",
+      "column_index": 29
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "累计领料",
+      "excel_unique_header": "累计领料",
+      "database_column": "erp_cumulative_material_issue",
+      "legacy_database_column": "erp_累计领料",
+      "column_comment": "Excel列名：累计领料",
+      "column_index": 30
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "额外费用",
+      "excel_unique_header": "额外费用",
+      "database_column": "erp_extra_expense",
+      "legacy_database_column": "erp_额外费用",
+      "column_comment": "Excel列名：额外费用",
+      "column_index": 31
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "费用类型",
+      "excel_unique_header": "费用类型",
+      "database_column": "erp_expense_type",
+      "legacy_database_column": "erp_费用类型",
+      "column_comment": "Excel列名：费用类型",
+      "column_index": 32
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "输入者",
+      "excel_unique_header": "输入者",
+      "database_column": "erp_entered_by",
+      "legacy_database_column": "erp_输入者",
+      "column_comment": "Excel列名：输入者",
+      "column_index": 33
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "输入日期",
+      "excel_unique_header": "输入日期",
+      "database_column": "erp_entry_date",
+      "legacy_database_column": "erp_输入日期",
+      "column_comment": "Excel列名：输入日期",
+      "column_index": 34
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "是否免检",
+      "excel_unique_header": "是否免检",
+      "database_column": "erp_is_inspection_exempt",
+      "legacy_database_column": "erp_是否免检",
+      "column_comment": "Excel列名：是否免检",
+      "column_index": 35
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "保质天数",
+      "excel_unique_header": "保质天数",
+      "database_column": "erp_shelf_life_days",
+      "legacy_database_column": "erp_保质天数",
+      "column_comment": "Excel列名：保质天数",
+      "column_index": 36
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "入库明细编号",
+      "excel_unique_header": "入库明细编号",
+      "database_column": "erp_receipt_detail_no",
+      "legacy_database_column": "erp_入库明细编号",
+      "column_comment": "Excel列名：入库明细编号",
+      "column_index": 37
     },
     {
       "table_name": "qms_material_receipt",
@@ -131,7 +417,73 @@
       "database_column": "erp_purchase_order_id",
       "legacy_database_column": "erp_采购单ID",
       "column_comment": "Excel列名：采购单ID",
-      "column_index": 12
+      "column_index": 38
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "工厂",
+      "excel_unique_header": "工厂",
+      "database_column": "erp_factory",
+      "legacy_database_column": "erp_工厂",
+      "column_comment": "Excel列名：工厂",
+      "column_index": 39
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "累计还出数量",
+      "excel_unique_header": "累计还出数量",
+      "database_column": "erp_cumulative_return_out_quantity",
+      "legacy_database_column": "erp_累计还出数量",
+      "column_comment": "Excel列名：累计还出数量",
+      "column_index": 40
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "借出单号",
+      "excel_unique_header": "借出单号",
+      "database_column": "erp_loan_out_document_no",
+      "legacy_database_column": "erp_借出单号",
+      "column_comment": "Excel列名：借出单号",
+      "column_index": 41
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "入库类别",
+      "excel_unique_header": "入库类别",
+      "database_column": "erp_receipt_category",
+      "legacy_database_column": "erp_入库类别",
+      "column_comment": "Excel列名：入库类别",
+      "column_index": 42
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "送货单号",
+      "excel_unique_header": "送货单号",
+      "database_column": "erp_delivery_note_no",
+      "legacy_database_column": "erp_送货单号",
+      "column_comment": "Excel列名：送货单号",
+      "column_index": 43
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "部门请购数量",
+      "excel_unique_header": "部门请购数量",
+      "database_column": "erp_department_purchase_requisition_quantity",
+      "legacy_database_column": "erp_部门请购数量",
+      "column_comment": "Excel列名：部门请购数量",
+      "column_index": 44
     },
     {
       "table_name": "qms_material_receipt",
@@ -142,7 +494,645 @@
       "database_column": "erp_raw_material_major_category",
       "legacy_database_column": "erp_原料大类",
       "column_comment": "Excel列名：原料大类",
-      "column_index": 13
+      "column_index": 45
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "原料小类",
+      "excel_unique_header": "原料小类",
+      "database_column": "erp_raw_material_minor_category",
+      "legacy_database_column": "erp_原料小类",
+      "column_comment": "Excel列名：原料小类",
+      "column_index": 46
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "单重",
+      "excel_unique_header": "单重",
+      "database_column": "erp_unit_weight",
+      "legacy_database_column": "erp_单重",
+      "column_comment": "Excel列名：单重",
+      "column_index": 47
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "存货类别",
+      "excel_unique_header": "存货类别",
+      "database_column": "erp_inventory_category",
+      "legacy_database_column": "erp_存货类别",
+      "column_comment": "Excel列名：存货类别",
+      "column_index": 48
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "确认单价",
+      "excel_unique_header": "确认单价",
+      "database_column": "erp_confirmation_unit_price",
+      "legacy_database_column": "erp_确认单价",
+      "column_comment": "Excel列名：确认单价",
+      "column_index": 49
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "确认数量",
+      "excel_unique_header": "确认数量",
+      "database_column": "erp_confirmation_quantity",
+      "legacy_database_column": "erp_确认数量",
+      "column_comment": "Excel列名：确认数量",
+      "column_index": 50
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "打折单价",
+      "excel_unique_header": "打折单价",
+      "database_column": "erp_discount_unit_price",
+      "legacy_database_column": "erp_打折单价",
+      "column_comment": "Excel列名：打折单价",
+      "column_index": 51
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "单号",
+      "excel_unique_header": "单号",
+      "database_column": "erp_document_no",
+      "legacy_database_column": "erp_单号",
+      "column_comment": "Excel列名：单号",
+      "column_index": 52
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "入库重量",
+      "excel_unique_header": "入库重量",
+      "database_column": "erp_receipt_weight",
+      "legacy_database_column": "erp_入库重量",
+      "column_comment": "Excel列名：入库重量",
+      "column_index": 53
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "仓库名称",
+      "excel_unique_header": "仓库名称",
+      "database_column": "erp_warehouse_name",
+      "legacy_database_column": "erp_仓库名称",
+      "column_comment": "Excel列名：仓库名称",
+      "column_index": 54
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "不含税金额",
+      "excel_unique_header": "不含税金额",
+      "database_column": "erp_tax_exclusive_amount",
+      "legacy_database_column": "erp_不含税金额",
+      "column_comment": "Excel列名：不含税金额",
+      "column_index": 55
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "确认入库数量",
+      "excel_unique_header": "确认入库数量",
+      "database_column": "erp_confirmation_receipt_quantity",
+      "legacy_database_column": "erp_确认入库数量",
+      "column_comment": "Excel列名：确认入库数量",
+      "column_index": 56
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "确认退货数量",
+      "excel_unique_header": "确认退货数量",
+      "database_column": "erp_confirmation_return_quantity",
+      "legacy_database_column": "erp_确认退货数量",
+      "column_comment": "Excel列名：确认退货数量",
+      "column_index": 57
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "检验结果",
+      "excel_unique_header": "检验结果",
+      "database_column": "erp_inspection_result",
+      "legacy_database_column": "erp_检验结果",
+      "column_comment": "Excel列名：检验结果",
+      "column_index": 58
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "成本单价",
+      "excel_unique_header": "成本单价",
+      "database_column": "erp_cost_unit_price",
+      "legacy_database_column": "erp_成本单价",
+      "column_comment": "Excel列名：成本单价",
+      "column_index": 59
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "本币成本单价",
+      "excel_unique_header": "本币成本单价",
+      "database_column": "erp_local_currency_cost_unit_price",
+      "legacy_database_column": "erp_本币成本单价",
+      "column_comment": "Excel列名：本币成本单价",
+      "column_index": 60
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "财务签名",
+      "excel_unique_header": "财务签名",
+      "database_column": "erp_finance_signature",
+      "legacy_database_column": "erp_财务签名",
+      "column_comment": "Excel列名：财务签名",
+      "column_index": 61
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "财务签名人",
+      "excel_unique_header": "财务签名人",
+      "database_column": "erp_finance_signature_person",
+      "legacy_database_column": "erp_财务签名人",
+      "column_comment": "Excel列名：财务签名人",
+      "column_index": 62
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "财务签名日期",
+      "excel_unique_header": "财务签名日期",
+      "database_column": "erp_finance_signature_date",
+      "legacy_database_column": "erp_财务签名日期",
+      "column_comment": "Excel列名：财务签名日期",
+      "column_index": 63
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "成本金额",
+      "excel_unique_header": "成本金额",
+      "database_column": "erp_cost_amount",
+      "legacy_database_column": "erp_成本金额",
+      "column_comment": "Excel列名：成本金额",
+      "column_index": 64
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "本币成本金额",
+      "excel_unique_header": "本币成本金额",
+      "database_column": "erp_local_currency_cost_amount",
+      "legacy_database_column": "erp_本币成本金额",
+      "column_comment": "Excel列名：本币成本金额",
+      "column_index": 65
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "停止领料人",
+      "excel_unique_header": "停止领料人",
+      "database_column": "erp_stop_material_recipient",
+      "legacy_database_column": "erp_停止领料人",
+      "column_comment": "Excel列名：停止领料人",
+      "column_index": 66
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "停止领料日期",
+      "excel_unique_header": "停止领料日期",
+      "database_column": "erp_stop_material_issue_date",
+      "legacy_database_column": "erp_停止领料日期",
+      "column_comment": "Excel列名：停止领料日期",
+      "column_index": 67
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "审核签名",
+      "excel_unique_header": "审核签名",
+      "database_column": "erp_review_signature",
+      "legacy_database_column": "erp_审核签名",
+      "column_comment": "Excel列名：审核签名",
+      "column_index": 68
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "审核人",
+      "excel_unique_header": "审核人",
+      "database_column": "erp_review_person",
+      "legacy_database_column": "erp_审核人",
+      "column_comment": "Excel列名：审核人",
+      "column_index": 69
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "审核日期",
+      "excel_unique_header": "审核日期",
+      "database_column": "erp_review_date",
+      "legacy_database_column": "erp_审核日期",
+      "column_comment": "Excel列名：审核日期",
+      "column_index": 70
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "入库面积",
+      "excel_unique_header": "入库面积",
+      "database_column": "erp_receipt_area",
+      "legacy_database_column": "erp_入库面积",
+      "column_comment": "Excel列名：入库面积",
+      "column_index": 71
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "停止还出",
+      "excel_unique_header": "停止还出",
+      "database_column": "erp_stop_return_out",
+      "legacy_database_column": "erp_停止还出",
+      "column_comment": "Excel列名：停止还出",
+      "column_index": 72
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "停止还出备注",
+      "excel_unique_header": "停止还出备注",
+      "database_column": "erp_stop_return_out_remarks",
+      "legacy_database_column": "erp_停止还出备注",
+      "column_comment": "Excel列名：停止还出备注",
+      "column_index": 73
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "停止还出人",
+      "excel_unique_header": "停止还出人",
+      "database_column": "erp_stop_return_out_person",
+      "legacy_database_column": "erp_停止还出人",
+      "column_comment": "Excel列名：停止还出人",
+      "column_index": 74
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "停止还出日期",
+      "excel_unique_header": "停止还出日期",
+      "database_column": "erp_stop_return_out_date",
+      "legacy_database_column": "erp_停止还出日期",
+      "column_comment": "Excel列名：停止还出日期",
+      "column_index": 75
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "最小安全库存",
+      "excel_unique_header": "最小安全库存",
+      "database_column": "erp_minimum_safety_inventory",
+      "legacy_database_column": "erp_最小安全库存",
+      "column_comment": "Excel列名：最小安全库存",
+      "column_index": 76
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "最大安全库存",
+      "excel_unique_header": "最大安全库存",
+      "database_column": "erp_maximum_safety_inventory",
+      "legacy_database_column": "erp_最大安全库存",
+      "column_comment": "Excel列名：最大安全库存",
+      "column_index": 77
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "有效期",
+      "excel_unique_header": "有效期",
+      "database_column": "erp_valid_until",
+      "legacy_database_column": "erp_有效期",
+      "column_comment": "Excel列名：有效期",
+      "column_index": 78
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "报关核销",
+      "excel_unique_header": "报关核销",
+      "database_column": "erp_customs_writeoff",
+      "legacy_database_column": "erp_报关核销",
+      "column_comment": "Excel列名：报关核销",
+      "column_index": 79
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "其他mc3",
+      "excel_unique_header": "其他mc3",
+      "database_column": "erp_mc_3",
+      "legacy_database_column": "erp_其他mc3",
+      "column_comment": "Excel列名：其他mc3",
+      "column_index": 80
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "其他mc4",
+      "excel_unique_header": "其他mc4",
+      "database_column": "erp_mc_4",
+      "legacy_database_column": "erp_其他mc4",
+      "column_comment": "Excel列名：其他mc4",
+      "column_index": 81
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "厂商编号",
+      "excel_unique_header": "厂商编号",
+      "database_column": "erp_supplier_no",
+      "legacy_database_column": "erp_厂商编号",
+      "column_comment": "Excel列名：厂商编号",
+      "column_index": 82
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "子类",
+      "excel_unique_header": "子类",
+      "database_column": "erp_subcategory",
+      "legacy_database_column": "erp_子类",
+      "column_comment": "Excel列名：子类",
+      "column_index": 83
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "外发厂商编号",
+      "excel_unique_header": "外发厂商编号",
+      "database_column": "erp_outsourcing_supplier_no",
+      "legacy_database_column": "erp_外发厂商编号",
+      "column_comment": "Excel列名：外发厂商编号",
+      "column_index": 84
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "外发厂商名称",
+      "excel_unique_header": "外发厂商名称",
+      "database_column": "erp_outsourcing_supplier_name",
+      "legacy_database_column": "erp_外发厂商名称",
+      "column_comment": "Excel列名：外发厂商名称",
+      "column_index": 85
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "外发单价",
+      "excel_unique_header": "外发单价",
+      "database_column": "erp_outsourcing_unit_price",
+      "legacy_database_column": "erp_外发单价",
+      "column_comment": "Excel列名：外发单价",
+      "column_index": 86
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "外发币别",
+      "excel_unique_header": "外发币别",
+      "database_column": "erp_outsourcing_currency",
+      "legacy_database_column": "erp_外发币别",
+      "column_comment": "Excel列名：外发币别",
+      "column_index": 87
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "报关单号",
+      "excel_unique_header": "报关单号",
+      "database_column": "erp_customs_declaration_document_no",
+      "legacy_database_column": "erp_报关单号",
+      "column_comment": "Excel列名：报关单号",
+      "column_index": 88
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "营销模式",
+      "excel_unique_header": "营销模式",
+      "database_column": "erp_business_model",
+      "legacy_database_column": "erp_营销模式",
+      "column_comment": "Excel列名：营销模式",
+      "column_index": 89
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "仓位",
+      "excel_unique_header": "仓位",
+      "database_column": "erp_bin",
+      "legacy_database_column": "erp_仓位",
+      "column_comment": "Excel列名：仓位",
+      "column_index": 90
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "延期天数",
+      "excel_unique_header": "延期天数",
+      "database_column": "erp_extension_days",
+      "legacy_database_column": "erp_延期天数",
+      "column_comment": "Excel列名：延期天数",
+      "column_index": 91
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "验收单号",
+      "excel_unique_header": "验收单号",
+      "database_column": "erp_acceptance_document_no",
+      "legacy_database_column": "erp_验收单号",
+      "column_comment": "Excel列名：验收单号",
+      "column_index": 92
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "到期日期",
+      "excel_unique_header": "到期日期",
+      "database_column": "erp_expiry_date",
+      "legacy_database_column": "erp_到期日期",
+      "column_comment": "Excel列名：到期日期",
+      "column_index": 93
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "英文名称",
+      "excel_unique_header": "英文名称",
+      "database_column": "erp_english_name",
+      "legacy_database_column": "erp_英文名称",
+      "column_comment": "Excel列名：英文名称",
+      "column_index": 94
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "英文规格",
+      "excel_unique_header": "英文规格",
+      "database_column": "erp_english_specification",
+      "legacy_database_column": "erp_英文规格",
+      "column_comment": "Excel列名：英文规格",
+      "column_index": 95
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "采购下单日期",
+      "excel_unique_header": "采购下单日期",
+      "database_column": "erp_purchase_order_placed_date",
+      "legacy_database_column": "erp_采购下单日期",
+      "column_comment": "Excel列名：采购下单日期",
+      "column_index": 96
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "借入部门编号",
+      "excel_unique_header": "借入部门编号",
+      "database_column": "erp_loan_in_department_no",
+      "legacy_database_column": "erp_借入部门编号",
+      "column_comment": "Excel列名：借入部门编号",
+      "column_index": 97
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "借入部门名称",
+      "excel_unique_header": "借入部门名称",
+      "database_column": "erp_loan_in_department_name",
+      "legacy_database_column": "erp_借入部门名称",
+      "column_comment": "Excel列名：借入部门名称",
+      "column_index": 98
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "订购内容",
+      "excel_unique_header": "订购内容",
+      "database_column": "erp_order_content",
+      "legacy_database_column": "erp_订购内容",
+      "column_comment": "Excel列名：订购内容",
+      "column_index": 99
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "本厂采购",
+      "excel_unique_header": "本厂采购",
+      "database_column": "erp_this_factory_purchase",
+      "legacy_database_column": "erp_本厂采购",
+      "column_comment": "Excel列名：本厂采购",
+      "column_index": 100
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "标准单位",
+      "excel_unique_header": "标准单位",
+      "database_column": "erp_standard_unit",
+      "legacy_database_column": "erp_标准单位",
+      "column_comment": "Excel列名：标准单位",
+      "column_index": 101
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "换算标准",
+      "excel_unique_header": "换算标准",
+      "database_column": "erp_conversion_standard",
+      "legacy_database_column": "erp_换算标准",
+      "column_comment": "Excel列名：换算标准",
+      "column_index": 102
+    },
+    {
+      "table_name": "qms_material_receipt",
+      "source_file": "原料入库单资料.XLS.XLS",
+      "sheet_name": "Test",
+      "excel_source_header": "标准单位数量",
+      "excel_unique_header": "标准单位数量",
+      "database_column": "erp_standard_unit_quantity",
+      "legacy_database_column": "erp_标准单位数量",
+      "column_comment": "Excel列名：标准单位数量",
+      "column_index": 103
     },
     {
       "table_name": "qms_material_issue",

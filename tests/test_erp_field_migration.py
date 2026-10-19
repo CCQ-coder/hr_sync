@@ -306,11 +306,11 @@ class ErpFieldMigrationTests(unittest.TestCase):
         from qms_erp_sync import load_erp_field_registry
         registry = load_erp_field_registry()
         rows = self.migration.build_rename_manifest(registry)
-        self.assertEqual(len(rows), 1107)
+        self.assertEqual(len(rows), 1197)
         self.assertEqual(len({row.table_name for row in rows}), 11)
         self.assertEqual(sum(row.migration_kind == "split_source" for row in rows), 16)
         apply = self.migration.render_apply_sql(rows)
-        self.assertEqual(apply.count("CHANGE COLUMN"), 1091)
+        self.assertEqual(apply.count("CHANGE COLUMN"), 1181)
         self.assertEqual(apply.count("ADD COLUMN"), 16)
         self.assertEqual(apply.count("\nUPDATE "), 16)
         self.assertNotIn("DROP COLUMN", apply)
