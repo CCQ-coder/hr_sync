@@ -187,7 +187,60 @@ class FileCheckpointTests(unittest.TestCase):
         create_statements = [item for item in cursor.statements if "CREATE TABLE" in item]
         self.assertEqual(1, len(create_statements))
 
-    def test_old_relative_source_rows_block_mixed_identity_import(self) -> None:
+    def test_same_legacy_row_is_reused_without_duplicating_the_import(self) -> None:
+        raw = sync.RawSourceRecord(
+            source_file="D:/daily/客户订单资料.XLS", sheet_name="Test",
+            source_row_no=2, business_key="A#行2", source_key="new-key",
+            row_hash="same-hash", field_values={},
+            source_table="qms_customer_order", field_definitions={},
+        )
+        old_key = sync.legacy_source_key("客户订单资料.XLS", "Test", 2)
+        existing = {old_key: ("客户订单资料.XLS", "same-hash")}
+
+        self.assertEqual(
+            old_key,
+            sync.compatible_source_key(raw, "客户订单资料.XLS", existing),
+        )
+
+    def test_changed_legacy_row_is_preserved_when_new_day_uses_same_row(self) -> None:
+        raw = sync.RawSourceRecord(
+            source_file="D:/daily/客户订单资料.XLS", sheet_name="Test",
+            source_row_no=2, business_key="B#行2", source_key="new-key",
+            row_hash="new-hash", field_values={},
+            source_table="qms_customer_order", field_definitions={},
+        )
+        old_key = sync.legacy_source_key("客户订单资料.XLS", "Test", 2)
+        existing = {old_key: ("客户订单资料.XLS", "old-hash")}
+
+        self.assertEqual("new-key", sync.compatible_source_key(raw, "客户订单资料.XLS", existing))
+
+    def test_adopted_legacy_row_updates_in_place_after_same_path_overwrite(self) -> None:
+        raw = sync.RawSourceRecord(
+            source_file="D:/daily/客户订单资料.XLS", sheet_name="Test",
+            source_row_no=2, business_key="B#行2", source_key="new-key",
+            row_hash="new-hash", field_values={},
+            source_table="qms_customer_order", field_definitions={},
+        )
+        old_key = sync.legacy_source_key("客户订单资料.XLS", "Test", 2)
+        self.assertEqual(old_key, sync.compatible_source_key(
+            raw, "客户订单资料.XLS", {old_key: (raw.source_file, "old-hash")},
+        ))
+        self.assertEqual("new-key", sync.compatible_source_key(
+            raw, "客户订单资料.XLS", {old_key: ("D:/other/客户订单资料.XLS", "new-hash")},
+        ))
+
+    def test_existing_new_key_takes_precedence_over_matching_legacy_row(self) -> None:
+        raw = sync.RawSourceRecord(
+            source_file="D:/daily/客户订单资料.XLS", sheet_name="Test",
+            source_row_no=2, business_key="B#行2", source_key="new-key",
+            row_hash="new-hash", field_values={},
+            source_table="qms_customer_order", field_definitions={},
+        )
+        old_key = sync.legacy_source_key("客户订单资料.XLS", "Test", 2)
+        existing = {old_key: ("客户订单资料.XLS", "new-hash"), "new-key": (raw.source_file, "new-hash")}
+        self.assertEqual("new-key", sync.compatible_source_key(raw, "客户订单资料.XLS", existing))
+
+    def test_legacy_lookup_is_limited_to_tenant_and_current_file(self) -> None:
         class Cursor:
             def __init__(self):
                 self.calls = []
@@ -195,20 +248,86 @@ class FileCheckpointTests(unittest.TestCase):
             def execute(self, statement, parameters):
                 self.calls.append((statement, parameters))
 
-            def fetchone(self):
-                return (1,)
+            def fetchall(self):
+                return [("old-key", "客户订单资料.XLS", "same-hash")]
 
         client = object.__new__(sync.QmsDatabaseClient)
         client.tenant = "customer-b"
         cursor = Cursor()
-        with patch.object(client, "_existing_source_tables", return_value={"qms_customer_order"}):
-            with self.assertRaisesRegex(sync.SyncError, "重新初始化"):
-                client._assert_source_identity_migration_safe(cursor)
-        self.assertIn("source_file NOT REGEXP", cursor.calls[0][0])
-        self.assertEqual(("customer-b",), cursor.calls[0][1])
+        result = client._source_records_for_file(
+            cursor, "qms_customer_order", "客户订单资料.XLS", "D:/daily/客户订单资料.XLS",
+        )
+        self.assertEqual({"old-key": ("客户订单资料.XLS", "same-hash")}, result)
+        self.assertIn("tenant_code = %s", cursor.calls[0][0])
+        self.assertIn("source_file IN (%s, %s)", cursor.calls[0][0])
+        self.assertEqual(("customer-b", "客户订单资料.XLS", "D:/daily/客户订单资料.XLS"), cursor.calls[0][1])
 
 
 class ResumeTests(unittest.TestCase):
+    def test_existing_legacy_row_is_used_during_file_sync(self) -> None:
+        class Connection:
+            def cursor(self):
+                return self
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def commit(self):
+                pass
+
+            def close(self):
+                pass
+
+        class Client:
+            def __init__(self):
+                self.written_keys = []
+
+            def _connect(self):
+                return Connection()
+
+            def _existing_source_tables(self, _cursor):
+                return {"qms_customer_order"}
+
+            def _source_records_for_file(self, _cursor, _table, relative, _absolute):
+                return {sync.legacy_source_key(relative, "Test", 2): (relative, "same-hash")}
+
+            def _upsert_source_records(self, _cursor, _table, records):
+                self.written_keys.extend(record.source_key for record in records)
+
+            def _deactivate_removed_file_records(self, _cursor, _removed):
+                return 0
+
+        def fake_records(_config, _callback, stats, *, source_directory, selected_files):
+            stats.files_scanned += 1
+            stats.raw_records += 1
+            yield sync.RawSourceRecord(
+                source_file=selected_files[0].resolve().as_posix(), sheet_name="Test",
+                source_row_no=2, business_key="A#行2", source_key="new-key",
+                row_hash="same-hash", field_values={},
+                source_table="qms_customer_order", field_definitions={},
+            ), None
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            source.mkdir()
+            (source / "客户订单资料.xls").write_bytes(b"today")
+            client = Client()
+            config = {"skip_initialization": True, "incremental_directory": str(source)}
+            messages = []
+            with patch.object(sync, "state_path", return_value=root / "state.json"), \
+                    patch.object(sync, "iter_all_source_records", side_effect=fake_records), \
+                    patch.object(sync, "QmsDatabaseClient", return_value=client):
+                sync.synchronize_database_directory(config, False, messages.append)
+                old_key = sync.legacy_source_key("客户订单资料.xls", "Test", 2)
+                self.assertEqual([old_key], client.written_keys)
+                state = sync.load_state()
+                self.assertEqual("same-hash", state[f"raw:{old_key}"])
+                self.assertTrue(any("复用旧版源记录 1 条" in message for message in messages))
+
     def test_file_replaced_while_reading_does_not_advance_checkpoint(self) -> None:
         class FakeConnection:
             rollbacks = 0
@@ -235,8 +354,8 @@ class ResumeTests(unittest.TestCase):
             def __init__(self, connection):
                 self.connection = connection
 
-            def _assert_source_identity_migration_safe(self, _cursor):
-                pass
+            def _existing_source_tables(self, _cursor):
+                return set()
 
             def _connect(self):
                 return self.connection
@@ -291,8 +410,8 @@ class ResumeTests(unittest.TestCase):
             def __init__(self):
                 self.removed = []
 
-            def _assert_source_identity_migration_safe(self, _cursor):
-                pass
+            def _existing_source_tables(self, _cursor):
+                return set()
 
             def _connect(self):
                 return FakeConnection()
@@ -372,8 +491,8 @@ class ResumeTests(unittest.TestCase):
                 self.connections = []
                 self.fail_second = True
 
-            def _assert_source_identity_migration_safe(self, _cursor):
-                pass
+            def _existing_source_tables(self, _cursor):
+                return set()
 
             def _connect(self):
                 connection = FakeConnection()

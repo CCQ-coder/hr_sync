@@ -20,7 +20,7 @@ import traceback
 import urllib.error
 import urllib.request
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -618,6 +618,33 @@ def source_file_state_key(role: str, directory: Path, path: Path) -> str:
     # relative filename alone would reuse yesterday's checkpoint.
     path.relative_to(directory)
     return f"source-file:{role}:{path.resolve().as_posix().casefold()}"
+
+
+def legacy_source_key(relative_file: str, sheet_name: str, row_no: int) -> str:
+    """Reproduce the row identity written by releases before absolute paths."""
+    identity = "\x1f".join((relative_file.casefold(), sheet_name.casefold(), str(row_no)))
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def compatible_source_key(
+    record: RawSourceRecord, relative_file: str,
+    existing: Mapping[str, Tuple[str, str]],
+) -> str:
+    """Reuse a legacy row only when its current file ownership is certain."""
+    if record.source_key in existing:
+        return record.source_key
+    old_key = legacy_source_key(relative_file, record.sheet_name, record.source_row_no)
+    old = existing.get(old_key)
+    if old is None:
+        return record.source_key
+    old_file, old_hash = old
+    current_file = record.source_file.replace("\\", "/").casefold()
+    previous_file = old_file.replace("\\", "/").casefold()
+    if previous_file == current_file:
+        return old_key
+    if previous_file == relative_file.casefold() and old_hash == record.row_hash:
+        return old_key
+    return record.source_key
 
 
 def file_membership_state_key(file_key: str) -> str:
@@ -1788,21 +1815,17 @@ class QmsDatabaseClient:
         )
         return {str(row[0]) for row in cursor.fetchall()}
 
-    def _assert_source_identity_migration_safe(self, cursor) -> None:
-        """Do not mix old relative-path row keys with absolute-path row keys."""
-        for table_name in sorted(self._existing_source_tables(cursor)):
-            cursor.execute(
-                f"SELECT 1 FROM {self._table_name(table_name)} "
-                "WHERE tenant_code = %s AND source_file NOT REGEXP '^([A-Za-z]:/|/)' "
-                "LIMIT 1",
-                (self.tenant,),
-            )
-            if cursor.fetchone():
-                raise SyncError(
-                    f"检测到 {table_name} 中有旧版相对路径源记录。"
-                    "为避免同名增量文件覆盖全量数据，请先备份并清理本工具写入的数据，"
-                    "再使用此版本重新初始化。"
-                )
+    def _source_records_for_file(
+        self, cursor, table_name: str, relative_file: str, absolute_file: str,
+    ) -> Dict[str, Tuple[str, str]]:
+        """Find earlier rows for this file without reading another tenant's data."""
+        cursor.execute(
+            f"SELECT source_key, source_file, row_hash FROM {self._table_name(table_name)} "
+            "WHERE tenant_code = %s AND source_file IN (%s, %s)",
+            (self.tenant, relative_file, absolute_file),
+        )
+        return {str(key): (str(source_file), str(row_hash))
+                for key, source_file, row_hash in cursor.fetchall()}
 
     def _reconcile_source_snapshot(
         self, cursor, source_keys_by_table: Mapping[str, Sequence[str]], existing_tables: set[str],
@@ -2055,16 +2078,16 @@ def synchronize_database_directory(
 ) -> SyncSummary:
     """Commit one workbook at a time and resume after the last committed file."""
     loaded_state = load_state()
-    identity_checked = loaded_state.get(SOURCE_IDENTITY_VERSION_STATE_KEY) == "2"
+    state_uses_absolute_paths = loaded_state.get(SOURCE_IDENTITY_VERSION_STATE_KEY) == "2"
     # Old row hashes and file memberships refer to relative-path identities.
-    # Once the database is verified clean, start a fresh local cursor too.
-    previous = loaded_state if identity_checked else {}
+    # Older checkpoints cannot identify files when a daily root changes.
+    previous = loaded_state if state_uses_absolute_paths else {}
     next_state: Dict[str, str] = dict(previous)
     scan_groups, _ = build_source_scan_plan(config, previous)
     initialization, incremental, _ = configured_source_directories(config)
     source_description = f"初始化={initialization or '已跳过'}；增量={incremental or '未配置'}"
     stats = SourceScanStats()
-    added = updated = unchanged = written_raw = written_work_orders = deactivated = 0
+    added = updated = unchanged = written_raw = written_work_orders = deactivated = legacy_reused = 0
     work_order_hashes: Dict[str, str] = {}
     work_order_sources: Dict[str, str] = {}
     source_tables: set[str] = set()
@@ -2083,13 +2106,16 @@ def synchronize_database_directory(
         )
 
     def process_file(group: SourceScanGroup, path: Path, cursor) -> Tuple[Dict[str, str], Dict[str, Any]]:
-        nonlocal added, updated, unchanged, written_raw, written_work_orders
+        nonlocal added, updated, unchanged, written_raw, written_work_orders, legacy_reused
         pending_table: Optional[str] = None
         pending_records: List[RawSourceRecord] = []
         file_state: Dict[str, str] = {}
         raw_keys: Dict[str, set[str]] = {}
         order_keys: set[str] = set()
         batch_keys: set[str] = set()
+        relative_file = path.relative_to(group.directory).as_posix()
+        existing_tables = client._existing_source_tables(cursor) if cursor is not None else set()
+        existing_rows_by_table: Dict[str, Dict[str, Tuple[str, str]]] = {}
 
         def flush_raw_records() -> None:
             nonlocal pending_table, pending_records, written_raw
@@ -2106,6 +2132,19 @@ def synchronize_database_directory(
         for raw, payload in iter_all_source_records(
             config, callback, stats, source_directory=group.directory, selected_files=(path,),
         ):
+            if cursor is not None and raw.source_table:
+                if raw.source_table not in existing_rows_by_table:
+                    existing_rows_by_table[raw.source_table] = (
+                        client._source_records_for_file(
+                            cursor, raw.source_table, relative_file, raw.source_file,
+                        ) if raw.source_table in existing_tables else {}
+                    )
+                matched_key = compatible_source_key(
+                    raw, relative_file, existing_rows_by_table[raw.source_table],
+                )
+                if matched_key != raw.source_key:
+                    raw = replace(raw, source_key=matched_key)
+                    legacy_reused += 1
             if raw.source_table:
                 source_tables.add(raw.source_table)
                 raw_keys.setdefault(raw.source_table, set()).add(raw.source_key)
@@ -2183,9 +2222,6 @@ def synchronize_database_directory(
             try:
                 try:
                     with connection.cursor() as cursor:
-                        if not identity_checked:
-                            client._assert_source_identity_migration_safe(cursor)
-                            identity_checked = True
                         file_state, membership = process_file(group, path, cursor)
                         if source_file_checkpoint(path) != checkpoint:
                             raise SyncError(f"源文件处理期间发生覆盖：{relative_file}；请重试。")
@@ -2231,6 +2267,8 @@ def synchronize_database_directory(
         elif old_hash != value_hash:
             work_order_updated += 1
     callback(f"变更分析（与本机上次扫描相比）：新增 {added:,}，修改 {updated:,}，未变 {unchanged:,}。")
+    if legacy_reused:
+        callback(f"复用旧版源记录 {legacy_reused:,} 条，未为这些记录另建新行。")
     callback(f"工单映射：{stats.work_order_records:,} 条，新增 {work_order_added:,}，修改 {work_order_updated:,}。")
     if dry_run:
         callback("预演模式：已遍历全部 Excel 文件和工作表，未向 QMS 写入任何数据。")
@@ -2251,7 +2289,7 @@ def synchronize_database_directory(
         f"同步{'预演' if dry_run else '完成'}：{source_description}，文件={stats.files_scanned}，"
         f"工作表={stats.sheets_scanned}，源表={len(source_tables)}，原始记录={stats.raw_records}，"
         f"源记录写入/核验={written_raw}，工单={stats.work_order_records}，工单写入/核验={written_work_orders}，"
-        f"新增={added}，更新={updated}，未变={unchanged}，停用={deactivated}"
+        f"新增={added}，更新={updated}，未变={unchanged}，旧版记录复用={legacy_reused}，停用={deactivated}"
     )
     return summary
 
