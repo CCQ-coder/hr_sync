@@ -39,6 +39,7 @@ from pymysql import MySQLError
 APP_NAME = "QMS ERP 数据同步工具"
 CONFIG_FILE_NAME = "qms_erp_sync_config.json"
 STATE_FILE_NAME = "qms_erp_sync_state.json"
+BASELINE_REPLAY_STATE_KEY = "baseline-replay-pending"
 LOG_DIR_NAME = "logs"
 SOURCE_KEY_PREFIX = "ERP-EXCEL:"
 API_PATH = "/api/v1/integrations/work-orders"
@@ -495,15 +496,28 @@ def save_config(config: Mapping[str, Any]) -> None:
 
 def load_state() -> Dict[str, str]:
     target = state_path()
-    if not target.exists():
-        return {}
-    try:
-        document = json.loads(target.read_text(encoding="utf-8"))
-        values = document.get("records", {})
-        return values if isinstance(values, dict) else {}
-    except (OSError, json.JSONDecodeError):
-        # A corrupt local cursor must never result in a destructive operation.
-        return {}
+    records: Dict[str, str] = {}
+    if target.exists():
+        try:
+            document = json.loads(target.read_text(encoding="utf-8"))
+            values = document.get("records", {})
+            if isinstance(values, dict):
+                records.update(values)
+        except (OSError, json.JSONDecodeError):
+            # A corrupt local cursor must never result in a destructive operation.
+            pass
+    progress = progress_directory()
+    if progress.is_dir():
+        for entry in sorted(progress.glob("*.json"), key=lambda path: path.stat().st_mtime_ns):
+            try:
+                document = json.loads(entry.read_text(encoding="utf-8"))
+                values = document.get("records", {})
+                if isinstance(values, dict):
+                    records.update(values)
+            except (OSError, json.JSONDecodeError):
+                # A damaged progress entry is replayed from the source file.
+                continue
+    return records
 
 
 def save_state(records: Mapping[str, str]) -> None:
@@ -512,6 +526,40 @@ def save_state(records: Mapping[str, str]) -> None:
     document = {"version": 1, "records": dict(records), "saved_at": datetime.now().isoformat(timespec="seconds")}
     temporary.write_text(json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8")
     temporary.replace(target)
+
+
+def progress_directory() -> Path:
+    """Keep completed-file deltas separate until the full state is compacted."""
+    target = state_path()
+    return target.with_name(f"{target.stem}_progress")
+
+
+def save_file_progress(file_key: str, records: Mapping[str, str]) -> None:
+    """Persist one committed file without rewriting the entire row-hash cache."""
+    directory = progress_directory()
+    directory.mkdir(parents=True, exist_ok=True)
+    name = hashlib.sha256(file_key.encode("utf-8")).hexdigest()
+    target = directory / f"{name}.json"
+    temporary = directory / f"{name}.tmp"
+    document = {"file_key": file_key, "records": dict(records)}
+    with temporary.open("w", encoding="utf-8") as stream:
+        json.dump(document, stream, ensure_ascii=False, separators=(",", ":"))
+        stream.flush()
+        os.fsync(stream.fileno())
+    temporary.replace(target)
+
+
+def clear_file_progress() -> None:
+    directory = progress_directory()
+    if not directory.is_dir():
+        return
+    for entry in directory.iterdir():
+        if entry.is_file() and entry.suffix in {".json", ".tmp"}:
+            entry.unlink()
+    try:
+        directory.rmdir()
+    except OSError:
+        pass
 
 
 def log_line(message: str) -> None:
@@ -556,14 +604,65 @@ def configured_source_directories(config: Mapping[str, Any]) -> Tuple[str, str, 
 
 
 def source_file_checkpoint(path: Path) -> str:
-    """Cheap, deterministic checkpoint used after the directory monitor fires."""
-    stat = path.stat()
-    return f"{stat.st_size}:{stat.st_mtime_ns}"
+    """Content checkpoint that detects same-name, same-size daily overwrites."""
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return f"sha256:{digest.hexdigest()}"
 
 
 def source_file_state_key(role: str, directory: Path, path: Path) -> str:
     relative = path.relative_to(directory).as_posix().casefold()
     return f"source-file:{role}:{relative}"
+
+
+def file_membership_state_key(file_key: str) -> str:
+    return f"file-membership:{file_key}"
+
+
+def parse_file_membership(value: str) -> Dict[str, Any]:
+    if not value:
+        return {"raw": {}, "work_orders": [], "batches": []}
+    try:
+        document = json.loads(value)
+        if isinstance(document, dict) and isinstance(document.get("raw"), dict):
+            return document
+    except (TypeError, ValueError):
+        pass
+    return {"raw": {}, "work_orders": [], "batches": []}
+
+
+def removed_file_membership(
+    state: Mapping[str, str], file_key: str, current: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Find rows removed from this file and absent from all other tracked files."""
+    membership_key = file_membership_state_key(file_key)
+    old = parse_file_membership(state.get(membership_key, ""))
+    removed_raw = {
+        table: set(keys) - set(current["raw"].get(table, []))
+        for table, keys in old["raw"].items()
+    }
+    removed_orders = set(old["work_orders"]) - set(current["work_orders"])
+    removed_batches = set(old["batches"]) - set(current["batches"])
+    if not any(removed_raw.values()) and not removed_orders and not removed_batches:
+        return {"raw": {}, "work_orders": [], "batches": []}
+    for key, value in state.items():
+        if not key.startswith("file-membership:") or key == membership_key:
+            continue
+        other = parse_file_membership(value)
+        for table, keys in other["raw"].items():
+            if table in removed_raw:
+                removed_raw[table].difference_update(keys)
+        removed_orders.difference_update(other["work_orders"])
+        removed_batches.difference_update(other["batches"])
+        if not any(removed_raw.values()) and not removed_orders and not removed_batches:
+            break
+    return {
+        "raw": {table: sorted(keys) for table, keys in removed_raw.items() if keys},
+        "work_orders": sorted(removed_orders),
+        "batches": sorted(removed_batches),
+    }
 
 
 def build_source_scan_plan(
@@ -601,7 +700,8 @@ def build_source_scan_plan(
             key = source_file_state_key("incremental", root, path)
             value = source_file_checkpoint(path)
             checkpoints[key] = value
-            if initialization_changed or previous.get(key) != value:
+            if initialization_changed or previous.get(BASELINE_REPLAY_STATE_KEY) == "1" \
+                    or previous.get(key) != value:
                 changed.append(path)
         if changed:
             groups.append(SourceScanGroup("incremental", root, tuple(changed)))
@@ -612,7 +712,7 @@ def build_source_scan_plan(
 
 
 def directory_fingerprint(source_directory: Path) -> str:
-    """Fingerprint the complete Excel directory by path, size and edit time."""
+    """Fingerprint Excel paths and content for reliable overwrite detection."""
     directory = Path(source_directory).expanduser()
     digest = hashlib.sha256()
     files = sorted(
@@ -620,13 +720,10 @@ def directory_fingerprint(source_directory: Path) -> str:
         key=lambda path: path.relative_to(directory).as_posix().casefold(),
     )
     for path in files:
-        stat = path.stat()
         relative_path = path.relative_to(directory).as_posix()
         digest.update(relative_path.encode("utf-8"))
         digest.update(b"\0")
-        digest.update(str(stat.st_size).encode("ascii"))
-        digest.update(b"\0")
-        digest.update(str(stat.st_mtime_ns).encode("ascii"))
+        digest.update(source_file_checkpoint(path).encode("ascii"))
         digest.update(b"\n")
     return digest.hexdigest()
 
@@ -1415,6 +1512,7 @@ class QmsDatabaseClient:
         self.timeout = int(config.get("request_timeout_seconds", 30))
         self._table_columns: Dict[str, Dict[str, str]] = {}
         self._legacy_json_checked: set[str] = set()
+        self._source_table_ready: set[str] = set()
         if not all((self.host, self.port, self.database, self.username, self.tenant)):
             raise SyncError("请完整填写数据库主机、端口、库名、账号和 QMS 租户编码。")
         try:
@@ -1525,34 +1623,36 @@ class QmsDatabaseClient:
     def _ensure_source_table_schema(self, cursor, table_name: str, fields: Mapping[str, ErpFieldDefinition]) -> None:
         """Create a fixed ERP business table in MySQL when it is first needed."""
         table = self._table_name(table_name)
-        digest = hashlib.sha256(table_name.encode("utf-8")).hexdigest()[:16]
-        try:
-            cursor.execute(
-                f"""
-                CREATE TABLE IF NOT EXISTS {table} (
-                        id CHAR(36) NOT NULL,
-                        tenant_code VARCHAR(64) NOT NULL,
-                        source_key VARCHAR(64) NOT NULL,
-                        source_file VARCHAR(500) NOT NULL,
-                        sheet_name VARCHAR(255) NOT NULL,
-                        source_row_no INTEGER NOT NULL,
-                        business_key VARCHAR(600) NOT NULL,
-                        row_hash VARCHAR(64) NOT NULL,
-                        status VARCHAR(24) NOT NULL DEFAULT 'ACTIVE',
-                        created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
-                        updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
-                        PRIMARY KEY (id),
-                        UNIQUE KEY `uq_{digest}_source` (tenant_code, source_key),
-                        KEY `idx_{digest}_lookup` (tenant_code, source_file(128), sheet_name(64), status)
-                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-                """
-            )
-        except MySQLError as exc:
-            raise SyncError(
-                f"无法初始化 ERP 源数据表 {table_name}。"
-                "请使用拥有 MySQL 建表和建索引权限的账号运行同步。\n"
-                f"{exc}"
-            ) from exc
+        if table_name not in self._source_table_ready:
+            digest = hashlib.sha256(table_name.encode("utf-8")).hexdigest()[:16]
+            try:
+                cursor.execute(
+                    f"""
+                    CREATE TABLE IF NOT EXISTS {table} (
+                            id CHAR(36) NOT NULL,
+                            tenant_code VARCHAR(64) NOT NULL,
+                            source_key VARCHAR(64) NOT NULL,
+                            source_file VARCHAR(500) NOT NULL,
+                            sheet_name VARCHAR(255) NOT NULL,
+                            source_row_no INTEGER NOT NULL,
+                            business_key VARCHAR(600) NOT NULL,
+                            row_hash VARCHAR(64) NOT NULL,
+                            status VARCHAR(24) NOT NULL DEFAULT 'ACTIVE',
+                            created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+                            updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+                            PRIMARY KEY (id),
+                            UNIQUE KEY `uq_{digest}_source` (tenant_code, source_key),
+                            KEY `idx_{digest}_lookup` (tenant_code, source_file(128), sheet_name(64), status)
+                        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                    """
+                )
+            except MySQLError as exc:
+                raise SyncError(
+                    f"无法初始化 ERP 源数据表 {table_name}。"
+                    "请使用拥有 MySQL 建表和建索引权限的账号运行同步。\n"
+                    f"{exc}"
+                ) from exc
+            self._source_table_ready.add(table_name)
         # Earlier versions had a required row_data_json field.  Do not erase
         # historic JSON, but make the legacy column optional so new rows are
         # stored only in actual ERP fields.
@@ -1626,6 +1726,48 @@ class QmsDatabaseClient:
                 for record in records
             ],
         )
+
+    def _deactivate_removed_file_records(self, cursor, removed: Mapping[str, Any]) -> int:
+        """Deactivate only keys known to have belonged to an overwritten file."""
+        total = 0
+        for table_name, source_keys in removed["raw"].items():
+            table = self._table_name(table_name)
+            for offset in range(0, len(source_keys), 500):
+                batch = source_keys[offset:offset + 500]
+                placeholders = ", ".join(["%s"] * len(batch))
+                cursor.execute(
+                    f"UPDATE {table} SET `status` = 'INACTIVE', `updated_at` = CURRENT_TIMESTAMP(6) "
+                    f"WHERE `tenant_code` = %s AND `status` = 'ACTIVE' "
+                    f"AND `source_key` IN ({placeholders})",
+                    (self.tenant, *batch),
+                )
+                total += cursor.rowcount
+        for offset in range(0, len(removed["work_orders"]), 500):
+            batch = removed["work_orders"][offset:offset + 500]
+            placeholders = ", ".join(["%s"] * len(batch))
+            cursor.execute(
+                "UPDATE `qms_work_order` SET `status` = 'INACTIVE', "
+                "`updated_at` = CURRENT_TIMESTAMP(6) "
+                "WHERE `tenant_code` = %s AND `source_system` = 'ERP_EXCEL' "
+                f"AND `status` = 'ACTIVE' AND `source_key` IN ({placeholders})",
+                (self.tenant, *batch),
+            )
+            total += cursor.rowcount
+        for offset in range(0, len(removed["batches"]), 500):
+            batch = removed["batches"][offset:offset + 500]
+            placeholders = ", ".join(["%s"] * len(batch))
+            cursor.execute(
+                "UPDATE `qms_production_batch` AS batch "
+                "JOIN `qms_work_order` AS work_order "
+                "ON work_order.`id` = batch.`work_order_id` "
+                "AND work_order.`tenant_code` = batch.`tenant_code` "
+                "SET batch.`status` = 'INACTIVE', batch.`updated_at` = CURRENT_TIMESTAMP(6) "
+                "WHERE batch.`tenant_code` = %s AND work_order.`source_system` = 'ERP_EXCEL' "
+                f"AND batch.`status` = 'ACTIVE' AND batch.`batch_no` IN ({placeholders})",
+                (self.tenant, *batch),
+            )
+            total += cursor.rowcount
+        return total
 
     def _existing_source_tables(self, cursor) -> set[str]:
         placeholders = ", ".join(["%s"] * len(BUSINESS_SOURCE_TABLES))
@@ -1887,30 +2029,23 @@ class QmsGatewayClient:
 def synchronize_database_directory(
     config: Mapping[str, Any], dry_run: bool, callback: Callable[[str], None],
 ) -> SyncSummary:
-    """Write every Excel worksheet to its own table and map work-order rows."""
+    """Commit one workbook at a time and resume after the last committed file."""
     previous = load_state()
     next_state: Dict[str, str] = dict(previous)
-    scan_groups, file_checkpoints = build_source_scan_plan(config, previous)
+    scan_groups, _ = build_source_scan_plan(config, previous)
     initialization, incremental, _ = configured_source_directories(config)
     source_description = f"初始化={initialization or '已跳过'}；增量={incremental or '未配置'}"
     stats = SourceScanStats()
-    added = updated = unchanged = 0
-    work_order_added = work_order_updated = 0
-    written_raw = written_work_orders = 0
+    added = updated = unchanged = written_raw = written_work_orders = deactivated = 0
     work_order_hashes: Dict[str, str] = {}
     work_order_sources: Dict[str, str] = {}
-    work_order_keys: List[str] = []
-    source_keys_by_table: Dict[str, List[str]] = {}
     source_tables: set[str] = set()
-    # Deletion synchronization has been retired from the tool.  The key may
-    # exist in an old config or command-line override, but it cannot activate.
-    deactivate_missing = False
-    client: Optional[QmsDatabaseClient] = None
-    connection = None
-    existing_tables: set[str] = set()
-    deactivated = 0
+    client = None if dry_run or not scan_groups else QmsDatabaseClient(config)
 
     if not scan_groups:
+        if not dry_run and progress_directory().is_dir():
+            save_state(previous)
+            clear_file_progress()
         callback("未发现需要处理的新增或变更 Excel 文件，本次不连接数据库。")
         return SyncSummary(
             source_file=source_description, rows_read=0, added=0, updated=0,
@@ -1919,11 +2054,14 @@ def synchronize_database_directory(
             work_orders_written=0,
         )
 
-    def process(cursor) -> None:
-        nonlocal added, updated, unchanged, work_order_added, work_order_updated
-        nonlocal written_raw, written_work_orders
+    def process_file(group: SourceScanGroup, path: Path, cursor) -> Tuple[Dict[str, str], Dict[str, Any]]:
+        nonlocal added, updated, unchanged, written_raw, written_work_orders
         pending_table: Optional[str] = None
         pending_records: List[RawSourceRecord] = []
+        file_state: Dict[str, str] = {}
+        raw_keys: Dict[str, set[str]] = {}
+        order_keys: set[str] = set()
+        batch_keys: set[str] = set()
 
         def flush_raw_records() -> None:
             nonlocal pending_table, pending_records, written_raw
@@ -1937,31 +2075,22 @@ def synchronize_database_directory(
             pending_table = None
             pending_records = []
 
-        def planned_records() -> Iterable[Tuple[RawSourceRecord, Optional[Dict[str, Any]]]]:
-            for group in scan_groups:
-                label = "初始化数据" if group.role == "initialization" else "增量数据"
-                callback(f"开始处理{label}目录：{group.directory}")
-                yield from iter_all_source_records(
-                    config, callback, stats,
-                    source_directory=group.directory, selected_files=group.files,
-                )
-
-        for raw, payload in planned_records():
+        for raw, payload in iter_all_source_records(
+            config, callback, stats, source_directory=group.directory, selected_files=(path,),
+        ):
             if raw.source_table:
                 source_tables.add(raw.source_table)
+                raw_keys.setdefault(raw.source_table, set()).add(raw.source_key)
             raw_state_key = f"raw:{raw.source_key}"
             previous_hash = previous.get(raw_state_key)
-            next_state[raw_state_key] = raw.row_hash
-            is_changed = previous_hash != raw.row_hash
+            file_state[raw_state_key] = raw.row_hash
             if previous_hash is None:
                 added += 1
-            elif is_changed:
+            elif previous_hash != raw.row_hash:
                 updated += 1
             else:
                 unchanged += 1
-            # Do not make the local state file the source of truth.  A table
-            # can be cleared or restored independently of this PC.  The
-            # database upsert is idempotent and only updates changed rows.
+            # The database remains authoritative if this PC's cache is lost.
             if cursor is not None and raw.source_table:
                 if pending_table is not None and pending_table != raw.source_table:
                     flush_raw_records()
@@ -1969,22 +2098,24 @@ def synchronize_database_directory(
                 pending_records.append(raw)
                 if len(pending_records) >= 500:
                     flush_raw_records()
-            if deactivate_missing and raw.source_table:
-                source_keys_by_table.setdefault(raw.source_table, []).append(raw.source_key)
 
             if payload is not None:
                 source_key = str(payload["sourceKey"])
                 value_hash = payload_hash(payload)
                 duplicate_hash = work_order_hashes.get(source_key)
-                if duplicate_hash is not None:
-                    if duplicate_hash != value_hash and work_order_sources[source_key] == raw.source_file:
-                        raise SyncError(
-                            f"生产指令号重复且内容不一致：{payload['workOrderNo']}（来源 {raw.source_file} / {raw.sheet_name}）"
-                        )
-                if duplicate_hash is None:
-                    work_order_keys.append(source_key)
+                if duplicate_hash is not None and duplicate_hash != value_hash \
+                        and work_order_sources[source_key] == raw.source_file:
+                    raise SyncError(
+                        f"生产指令号重复且内容不一致：{payload['workOrderNo']}"
+                        f"（来源 {raw.source_file} / {raw.sheet_name}）"
+                    )
                 work_order_hashes[source_key] = value_hash
                 work_order_sources[source_key] = raw.source_file
+                file_state[f"work-order:{source_key}"] = value_hash
+                order_keys.add(source_key)
+                batch_no = as_text(payload.get("batchNo"))
+                if batch_no:
+                    batch_keys.add(batch_no)
                 if cursor is not None:
                     assert client is not None
                     work_order_id = client._upsert_work_order(cursor, payload)
@@ -1996,64 +2127,86 @@ def synchronize_database_directory(
             if stats.raw_records % 5000 == 0:
                 callback(f"已读取 {stats.raw_records:,} 条 ERP 原始记录…")
         flush_raw_records()
-        for source_key, value_hash in work_order_hashes.items():
-            work_order_state_key = f"work-order:{source_key}"
-            old_work_order_hash = previous.get(work_order_state_key, previous.get(source_key))
-            next_state[work_order_state_key] = value_hash
-            if old_work_order_hash is None:
-                work_order_added += 1
-            elif old_work_order_hash != value_hash:
-                work_order_updated += 1
+        membership = {
+            "raw": {table: sorted(keys) for table, keys in raw_keys.items()},
+            "work_orders": sorted(order_keys),
+            "batches": sorted(batch_keys),
+        }
+        return file_state, membership
 
+    for group in scan_groups:
+        label = "初始化数据" if group.role == "initialization" else "增量数据"
+        callback(f"开始处理{label}目录：{group.directory}")
+        for path in group.files:
+            file_key = source_file_state_key(group.role, group.directory, path)
+            relative_file = path.relative_to(group.directory).as_posix()
+            try:
+                checkpoint = source_file_checkpoint(path)
+            except OSError as exc:
+                raise SyncError(f"无法读取源文件 {relative_file}：{exc}") from exc
+            if dry_run:
+                process_file(group, path, None)
+                if source_file_checkpoint(path) != checkpoint:
+                    raise SyncError(f"源文件处理期间发生覆盖：{relative_file}；请重试。")
+                continue
+
+            assert client is not None
+            connection = client._connect()
+            try:
+                try:
+                    with connection.cursor() as cursor:
+                        file_state, membership = process_file(group, path, cursor)
+                        if source_file_checkpoint(path) != checkpoint:
+                            raise SyncError(f"源文件处理期间发生覆盖：{relative_file}；请重试。")
+                        removed = removed_file_membership(next_state, file_key, membership)
+                        deactivated_for_file = client._deactivate_removed_file_records(cursor, removed)
+                    connection.commit()
+                except Exception as exc:
+                    try:
+                        connection.rollback()
+                    except Exception:
+                        # A disconnected MySQL socket cannot be rolled back locally.
+                        pass
+                    if isinstance(exc, MySQLError):
+                        raise SyncError(
+                            f"处理 {relative_file} 时数据库连接中断或写入失败；"
+                            f"已完成文件保留进度，下次重试当前文件。原始错误：{exc}"
+                        ) from exc
+                    raise
+            finally:
+                try:
+                    connection.close()
+                except Exception:
+                    pass
+            file_state[file_key] = checkpoint
+            if group.role == "initialization" and any(
+                planned.role == "incremental" for planned in scan_groups
+            ):
+                file_state[BASELINE_REPLAY_STATE_KEY] = "1"
+            file_state[file_membership_state_key(file_key)] = json.dumps(
+                membership, ensure_ascii=False, separators=(",", ":"),
+            )
+            save_file_progress(file_key, file_state)
+            next_state.update(file_state)
+            deactivated += deactivated_for_file
+            callback(f"已提交并保存断点：{relative_file}。")
+
+    work_order_added = work_order_updated = 0
+    for source_key, value_hash in work_order_hashes.items():
+        old_hash = previous.get(f"work-order:{source_key}", previous.get(source_key))
+        if old_hash is None:
+            work_order_added += 1
+        elif old_hash != value_hash:
+            work_order_updated += 1
+    callback(f"变更分析（与本机上次扫描相比）：新增 {added:,}，修改 {updated:,}，未变 {unchanged:,}。")
+    callback(f"工单映射：{stats.work_order_records:,} 条，新增 {work_order_added:,}，修改 {work_order_updated:,}。")
     if dry_run:
-        process(None)
         callback("预演模式：已遍历全部 Excel 文件和工作表，未向 QMS 写入任何数据。")
     else:
-        client = QmsDatabaseClient(config)
-        connection = client._connect()
-        try:
-            with connection.cursor() as cursor:
-                    if deactivate_missing:
-                        existing_tables = client._existing_source_tables(cursor)
-                    process(cursor)
-                    if deactivate_missing:
-                        callback("正在对照完整目录快照，停用已从 ERP 删除的源数据…")
-                        raw_deactivated = client._reconcile_source_snapshot(
-                            cursor, source_keys_by_table, existing_tables
-                        )
-                        work_order_deactivated = 0
-                        if work_order_keys:
-                            placeholders = ", ".join(["%s"] * len(work_order_keys))
-                            cursor.execute(
-                                f"""
-                                UPDATE `qms_work_order`
-                                SET `status` = 'INACTIVE', `updated_at` = CURRENT_TIMESTAMP(6)
-                                WHERE `tenant_code` = %s
-                                  AND `source_system` = 'ERP_EXCEL'
-                                  AND `source_key` LIKE %s
-                                  AND `status` = 'ACTIVE'
-                                  AND `source_key` NOT IN ({placeholders})
-                                """,
-                                (client.tenant, f"{SOURCE_KEY_PREFIX}%", *work_order_keys),
-                            )
-                            work_order_deactivated = cursor.rowcount
-                        deactivated = raw_deactivated + work_order_deactivated
-            connection.commit()
-        except MySQLError as exc:
-            connection.rollback()
-            raise SyncError(f"QMS MySQL 数据库写入失败，整批事务已回滚：{exc}") from exc
-        finally:
-            connection.close()
-
-    callback(
-        f"变更分析（与本机上次扫描相比）：新增 {added:,}，修改 {updated:,}，未变 {unchanged:,}。"
-    )
-    callback(
-        f"工单映射：{stats.work_order_records:,} 条，新增 {work_order_added:,}，修改 {work_order_updated:,}。"
-    )
-    if not dry_run:
-        next_state.update(file_checkpoints)
+        if any(group.role == "incremental" for group in scan_groups):
+            next_state[BASELINE_REPLAY_STATE_KEY] = "0"
         save_state(next_state)
+        clear_file_progress()
         callback("文件处理状态已保存；后续只处理新增或变更的 Excel 文件。")
 
     summary = SyncSummary(
