@@ -40,6 +40,7 @@ APP_NAME = "QMS ERP 数据同步工具"
 CONFIG_FILE_NAME = "qms_erp_sync_config.json"
 STATE_FILE_NAME = "qms_erp_sync_state.json"
 BASELINE_REPLAY_STATE_KEY = "baseline-replay-pending"
+SOURCE_IDENTITY_VERSION_STATE_KEY = "source-identity-version"
 LOG_DIR_NAME = "logs"
 SOURCE_KEY_PREFIX = "ERP-EXCEL:"
 API_PATH = "/api/v1/integrations/work-orders"
@@ -613,8 +614,10 @@ def source_file_checkpoint(path: Path) -> str:
 
 
 def source_file_state_key(role: str, directory: Path, path: Path) -> str:
-    relative = path.relative_to(directory).as_posix().casefold()
-    return f"source-file:{role}:{relative}"
+    # The root may point at a different day's flat export directory.  A
+    # relative filename alone would reuse yesterday's checkpoint.
+    path.relative_to(directory)
+    return f"source-file:{role}:{path.resolve().as_posix().casefold()}"
 
 
 def file_membership_state_key(file_key: str) -> str:
@@ -1250,6 +1253,9 @@ def iter_all_source_records(
             relative_file = path.relative_to(directory).as_posix()
         except ValueError:
             relative_file = path.name
+        source_location = path.resolve().as_posix()
+        if len(source_location) > 500:
+            raise SyncError(f"源文件完整路径超过数据库字段长度：{relative_file}")
         stats.files_scanned += 1
         callback(f"遍历文件 {file_index:,}/{len(files):,}：{relative_file}")
         map_work_orders = not keyword or keyword in path.name.casefold()
@@ -1293,7 +1299,7 @@ def iter_all_source_records(
                             continue
                         yield from _source_record_pair(
                             relative_file, sheet.title, row_index, row, raw_data, 0, is_work_order,
-                            stats, target_table, definitions,
+                            stats, target_table, definitions, source_location,
                         )
             finally:
                 workbook.close()
@@ -1350,6 +1356,7 @@ def iter_all_source_records(
                     yield from _source_record_pair(
                         relative_file, sheet_name, zero_based_row + 1, row, raw_data,
                         workbook.datemode, is_work_order, stats, target_table, definitions,
+                        source_location,
                     )
             if decode_warnings[0]:
                 callback(
@@ -1371,12 +1378,13 @@ def _source_record_pair(
     stats: SourceScanStats,
     source_table: Optional[str],
     definitions: Sequence[ErpFieldDefinition],
+    source_location: str,
 ) -> Iterable[Tuple[RawSourceRecord, Optional[Dict[str, Any]]]]:
     """Build a source record and, where applicable, its work-order view."""
-    identity = "\x1f".join((relative_file.casefold(), sheet_name.casefold(), str(row_no)))
+    identity = "\x1f".join(("v2", source_location.casefold(), sheet_name.casefold(), str(row_no)))
     row_document = json.dumps(raw_data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     raw = RawSourceRecord(
-        source_file=relative_file,
+        source_file=source_location,
         sheet_name=sheet_name,
         source_row_no=row_no,
         business_key=raw_business_key(row, row_no),
@@ -1780,6 +1788,22 @@ class QmsDatabaseClient:
         )
         return {str(row[0]) for row in cursor.fetchall()}
 
+    def _assert_source_identity_migration_safe(self, cursor) -> None:
+        """Do not mix old relative-path row keys with absolute-path row keys."""
+        for table_name in sorted(self._existing_source_tables(cursor)):
+            cursor.execute(
+                f"SELECT 1 FROM {self._table_name(table_name)} "
+                "WHERE tenant_code = %s AND source_file NOT REGEXP '^([A-Za-z]:/|/)' "
+                "LIMIT 1",
+                (self.tenant,),
+            )
+            if cursor.fetchone():
+                raise SyncError(
+                    f"检测到 {table_name} 中有旧版相对路径源记录。"
+                    "为避免同名增量文件覆盖全量数据，请先备份并清理本工具写入的数据，"
+                    "再使用此版本重新初始化。"
+                )
+
     def _reconcile_source_snapshot(
         self, cursor, source_keys_by_table: Mapping[str, Sequence[str]], existing_tables: set[str],
     ) -> int:
@@ -2030,7 +2054,11 @@ def synchronize_database_directory(
     config: Mapping[str, Any], dry_run: bool, callback: Callable[[str], None],
 ) -> SyncSummary:
     """Commit one workbook at a time and resume after the last committed file."""
-    previous = load_state()
+    loaded_state = load_state()
+    identity_checked = loaded_state.get(SOURCE_IDENTITY_VERSION_STATE_KEY) == "2"
+    # Old row hashes and file memberships refer to relative-path identities.
+    # Once the database is verified clean, start a fresh local cursor too.
+    previous = loaded_state if identity_checked else {}
     next_state: Dict[str, str] = dict(previous)
     scan_groups, _ = build_source_scan_plan(config, previous)
     initialization, incremental, _ = configured_source_directories(config)
@@ -2155,6 +2183,9 @@ def synchronize_database_directory(
             try:
                 try:
                     with connection.cursor() as cursor:
+                        if not identity_checked:
+                            client._assert_source_identity_migration_safe(cursor)
+                            identity_checked = True
                         file_state, membership = process_file(group, path, cursor)
                         if source_file_checkpoint(path) != checkpoint:
                             raise SyncError(f"源文件处理期间发生覆盖：{relative_file}；请重试。")
@@ -2179,6 +2210,7 @@ def synchronize_database_directory(
                 except Exception:
                     pass
             file_state[file_key] = checkpoint
+            file_state[SOURCE_IDENTITY_VERSION_STATE_KEY] = "2"
             if group.role == "initialization" and any(
                 planned.role == "incremental" for planned in scan_groups
             ):

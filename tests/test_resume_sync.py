@@ -8,11 +8,83 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pymysql
+from openpyxl import Workbook
 
 import qms_erp_sync as sync
 
 
 class FileCheckpointTests(unittest.TestCase):
+    def test_same_named_exports_in_different_daily_roots_have_distinct_identity(self) -> None:
+        class Registry:
+            def canonical_headers_for(self, _source_file, headers):
+                return headers
+
+            def resolve_sheet(self, *_args):
+                return []
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            files = []
+            for day, order in (("10-19", "A"), ("10-20", "B")):
+                folder = root / day
+                folder.mkdir()
+                path = folder / "客户订单资料.xlsx"
+                workbook = Workbook()
+                workbook.active.append(["客户订单号"])
+                workbook.active.append([order])
+                workbook.save(path)
+                files.append((folder, path))
+
+            config = {"source_file_keyword": "生产指示资料"}
+            with patch.object(sync, "load_erp_field_registry", return_value=Registry()):
+                rows = [
+                    next(iter(sync.iter_all_source_records(
+                        config, lambda _: None, sync.SourceScanStats(),
+                        source_directory=folder, selected_files=(path,),
+                    )))[0]
+                    for folder, path in files
+                ]
+            self.assertNotEqual(rows[0].source_key, rows[1].source_key)
+            self.assertNotEqual(rows[0].source_file, rows[1].source_file)
+
+            first_config = {"skip_initialization": True, "incremental_directory": str(files[0][0])}
+            second_config = {"skip_initialization": True, "incremental_directory": str(files[1][0])}
+            _, previous = sync.build_source_scan_plan(first_config, {})
+            groups, _ = sync.build_source_scan_plan(second_config, previous)
+            self.assertEqual([files[1][1]], list(groups[0].files))
+
+    def test_same_path_overwrite_keeps_row_key_and_changes_content_hash(self) -> None:
+        class Registry:
+            def canonical_headers_for(self, _source_file, headers):
+                return headers
+
+            def resolve_sheet(self, *_args):
+                return []
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "客户订单资料.xlsx"
+
+            def write_order(order):
+                workbook = Workbook()
+                workbook.active.append(["客户订单号"])
+                workbook.active.append([order])
+                workbook.save(path)
+
+            def scan():
+                with patch.object(sync, "load_erp_field_registry", return_value=Registry()):
+                    return next(iter(sync.iter_all_source_records(
+                        {}, lambda _: None, sync.SourceScanStats(),
+                        source_directory=root, selected_files=(path,),
+                    )))[0]
+
+            write_order("A")
+            before = scan()
+            write_order("B")
+            after = scan()
+            self.assertEqual(before.source_key, after.source_key)
+            self.assertNotEqual(before.row_hash, after.row_hash)
+
     def test_same_size_and_mtime_overwrite_is_detected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -115,6 +187,26 @@ class FileCheckpointTests(unittest.TestCase):
         create_statements = [item for item in cursor.statements if "CREATE TABLE" in item]
         self.assertEqual(1, len(create_statements))
 
+    def test_old_relative_source_rows_block_mixed_identity_import(self) -> None:
+        class Cursor:
+            def __init__(self):
+                self.calls = []
+
+            def execute(self, statement, parameters):
+                self.calls.append((statement, parameters))
+
+            def fetchone(self):
+                return (1,)
+
+        client = object.__new__(sync.QmsDatabaseClient)
+        client.tenant = "customer-b"
+        cursor = Cursor()
+        with patch.object(client, "_existing_source_tables", return_value={"qms_customer_order"}):
+            with self.assertRaisesRegex(sync.SyncError, "重新初始化"):
+                client._assert_source_identity_migration_safe(cursor)
+        self.assertIn("source_file NOT REGEXP", cursor.calls[0][0])
+        self.assertEqual(("customer-b",), cursor.calls[0][1])
+
 
 class ResumeTests(unittest.TestCase):
     def test_file_replaced_while_reading_does_not_advance_checkpoint(self) -> None:
@@ -142,6 +234,9 @@ class ResumeTests(unittest.TestCase):
         class FakeClient:
             def __init__(self, connection):
                 self.connection = connection
+
+            def _assert_source_identity_migration_safe(self, _cursor):
+                pass
 
             def _connect(self):
                 return self.connection
@@ -195,6 +290,9 @@ class ResumeTests(unittest.TestCase):
         class FakeClient:
             def __init__(self):
                 self.removed = []
+
+            def _assert_source_identity_migration_safe(self, _cursor):
+                pass
 
             def _connect(self):
                 return FakeConnection()
@@ -273,6 +371,9 @@ class ResumeTests(unittest.TestCase):
             def __init__(self, _config):
                 self.connections = []
                 self.fail_second = True
+
+            def _assert_source_identity_migration_safe(self, _cursor):
+                pass
 
             def _connect(self):
                 connection = FakeConnection()
