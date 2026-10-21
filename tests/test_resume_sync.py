@@ -164,6 +164,7 @@ class FileCheckpointTests(unittest.TestCase):
         self.assertEqual(3, count)
         self.assertEqual(3, len(cursor.calls))
         self.assertIn("`tenant_code` = %s", cursor.calls[0][0])
+        self.assertIn("'SUPERSEDED'", cursor.calls[0][0])
         self.assertEqual(("customer-b", "old"), cursor.calls[0][1])
         self.assertIn("`source_system` = 'ERP_EXCEL'", cursor.calls[1][0])
         self.assertIn("work_order.`source_system` = 'ERP_EXCEL'", cursor.calls[2][0])
@@ -263,7 +264,160 @@ class FileCheckpointTests(unittest.TestCase):
         self.assertEqual(("customer-b", "客户订单资料.XLS", "D:/daily/客户订单资料.XLS"), cursor.calls[0][1])
 
 
+class CustomerOrderLatestTests(unittest.TestCase):
+    def test_newer_export_supersedes_same_line_without_hiding_split_delivery(self) -> None:
+        class Cursor:
+            rowcount = 0
+
+            def __init__(self):
+                self.calls = []
+                self.rows = [
+                    ("old", "D:/10-19/客户订单资料.XLS", 23255, "ACTIVE", "PI10102490", "L1PT44162A01", "2026-10-23", "1800", "2026-10-20 09:00:00"),
+                    ("new", "D:/2026-10-20/客户订单资料.XLS", 3, "ACTIVE", "PI10102490", "L1PT44162A01", "2026-10-23", "1800", "2026-10-20 10:00:00"),
+                    ("split-1", "D:/2026-10-20/客户订单资料.XLS", 79, "ACTIVE", "PI10102533", "04PO43210A01", "2026-11-15", "1500", "2026-10-20 10:00:00"),
+                    ("split-2", "D:/2026-10-20/客户订单资料.XLS", 80, "ACTIVE", "PI10102533", "04PO43210A01", "2027-02-01", "1450", "2026-10-20 10:00:00"),
+                ]
+
+            def execute(self, statement, parameters):
+                self.calls.append((statement, parameters))
+                self.rowcount = 1
+
+            def fetchall(self):
+                return self.rows
+
+        client = object.__new__(sync.QmsDatabaseClient)
+        client.tenant = "customer-b"
+        cursor = Cursor()
+
+        changed = client._reconcile_customer_order_latest(cursor)
+
+        self.assertEqual(1, changed)
+        updates = [(sql, args) for sql, args in cursor.calls if sql.lstrip().startswith("UPDATE")]
+        self.assertEqual(1, len(updates))
+        self.assertIn("`status` = 'SUPERSEDED'", updates[0][0])
+        self.assertEqual(("customer-b", "old"), updates[0][1])
+
+    def test_superseded_line_reactivates_when_newer_source_is_removed(self) -> None:
+        class Cursor:
+            rowcount = 1
+
+            def __init__(self):
+                self.calls = []
+
+            def execute(self, statement, parameters):
+                self.calls.append((statement, parameters))
+
+            def fetchall(self):
+                return [
+                    ("old", "D:/10-19/客户订单资料.XLS", 23255, "SUPERSEDED", "PI10102490", "L1PT44162A01", "2026-10-23", "1800", "2026-10-20 09:00:00"),
+                ]
+
+        client = object.__new__(sync.QmsDatabaseClient)
+        client.tenant = "customer-b"
+        cursor = Cursor()
+
+        changed = client._reconcile_customer_order_latest(cursor)
+
+        self.assertEqual(1, changed)
+        updates = [(sql, args) for sql, args in cursor.calls if sql.lstrip().startswith("UPDATE")]
+        self.assertEqual(1, len(updates))
+        self.assertIn("`status` = 'ACTIVE'", updates[0][0])
+        self.assertEqual(("customer-b", "old"), updates[0][1])
+
+    def test_ambiguous_lines_in_one_export_are_left_alone(self) -> None:
+        class Cursor:
+            def __init__(self):
+                self.calls = []
+
+            def execute(self, statement, parameters):
+                self.calls.append((statement, parameters))
+
+            def fetchall(self):
+                return [
+                    ("a", "D:/10-19/客户订单资料.XLS", 10246, "ACTIVE", "PI10093380", "04PC40817A01", "2025-11-02", "2004", "2026-10-21 11:00:00"),
+                    ("b", "D:/10-19/客户订单资料.XLS", 10247, "ACTIVE", "PI10093380", "04PC40817A01", "2025-11-02", "2004", "2026-10-21 11:00:00"),
+                    ("c", "D:/2026-10-20/客户订单资料.XLS", 4, "ACTIVE", "PI10093380", "04PC40817A01", "2025-11-02", "2004", "2026-10-20 11:00:00"),
+                ]
+
+        client = object.__new__(sync.QmsDatabaseClient)
+        client.tenant = "customer-b"
+        cursor = Cursor()
+        self.assertEqual(0, client._reconcile_customer_order_latest(cursor))
+        self.assertEqual(1, len(cursor.calls))
+
+    def test_export_date_beats_later_import_time(self) -> None:
+        class Cursor:
+            rowcount = 1
+
+            def __init__(self):
+                self.calls = []
+
+            def execute(self, statement, parameters):
+                self.calls.append((statement, parameters))
+
+            def fetchall(self):
+                return [
+                    ("old", "D:/10-19/客户订单资料.XLS", 23255, "ACTIVE", "PI10102490", "L1PT44162A01", "2026-10-23", "1800", "2026-10-21 12:00:00"),
+                    ("new", "D:/2026-10-20/客户订单资料.XLS", 3, "ACTIVE", "PI10102490", "L1PT44162A01", "2026-10-23", "1800", "2026-10-20 10:00:00"),
+                ]
+
+        client = object.__new__(sync.QmsDatabaseClient)
+        client.tenant = "customer-b"
+        cursor = Cursor()
+        self.assertEqual(1, client._reconcile_customer_order_latest(cursor))
+        updates = [(sql, args) for sql, args in cursor.calls if sql.lstrip().startswith("UPDATE")]
+        self.assertEqual(("customer-b", "old"), updates[0][1])
+
+
 class ResumeTests(unittest.TestCase):
+    def test_unchanged_files_reconcile_existing_customer_order_rows_once(self) -> None:
+        class Connection:
+            def cursor(self):
+                return self
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def commit(self):
+                pass
+
+            def close(self):
+                pass
+
+        class Client:
+            calls = 0
+
+            def _connect(self):
+                return Connection()
+
+            def _existing_source_tables(self, _cursor):
+                return {"qms_customer_order"}
+
+            def _reconcile_customer_order_latest(self, _cursor):
+                self.calls += 1
+                return 1
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            source.mkdir()
+            (source / "客户订单资料.xls").write_bytes(b"already-imported")
+            config = {"initialization_directory": str(source), "incremental_directory": "", "skip_initialization": False}
+            _, state = sync.build_source_scan_plan(config, {})
+            state[sync.SOURCE_IDENTITY_VERSION_STATE_KEY] = "2"
+            client = Client()
+            with patch.object(sync, "state_path", return_value=root / "state.json"), \
+                    patch.object(sync, "QmsDatabaseClient", return_value=client):
+                sync.save_state(state)
+                self.assertEqual(0, sync.synchronize_database_directory(config, False, lambda _: None).source_files)
+                self.assertEqual(1, client.calls)
+                self.assertEqual("1", sync.load_state()[sync.CUSTOMER_ORDER_RECONCILE_STATE_KEY])
+                sync.synchronize_database_directory(config, False, lambda _: None)
+                self.assertEqual(1, client.calls)
+
     def test_existing_legacy_row_is_used_during_file_sync(self) -> None:
         class Connection:
             def cursor(self):
@@ -284,6 +438,7 @@ class ResumeTests(unittest.TestCase):
         class Client:
             def __init__(self):
                 self.written_keys = []
+                self.reconciled = 0
 
             def _connect(self):
                 return Connection()
@@ -298,6 +453,10 @@ class ResumeTests(unittest.TestCase):
                 self.written_keys.extend(record.source_key for record in records)
 
             def _deactivate_removed_file_records(self, _cursor, _removed):
+                return 0
+
+            def _reconcile_customer_order_latest(self, _cursor):
+                self.reconciled += 1
                 return 0
 
         def fake_records(_config, _callback, stats, *, source_directory, selected_files):
@@ -324,6 +483,7 @@ class ResumeTests(unittest.TestCase):
                 sync.synchronize_database_directory(config, False, messages.append)
                 old_key = sync.legacy_source_key("客户订单资料.xls", "Test", 2)
                 self.assertEqual([old_key], client.written_keys)
+                self.assertEqual(1, client.reconciled)
                 state = sync.load_state()
                 self.assertEqual("same-hash", state[f"raw:{old_key}"])
                 self.assertTrue(any("复用旧版源记录 1 条" in message for message in messages))
