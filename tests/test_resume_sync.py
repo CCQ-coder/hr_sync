@@ -265,108 +265,75 @@ class FileCheckpointTests(unittest.TestCase):
 
 
 class CustomerOrderLatestTests(unittest.TestCase):
-    def test_newer_export_supersedes_same_line_without_hiding_split_delivery(self) -> None:
-        class Cursor:
-            rowcount = 0
+    class Cursor:
+        rowcount = 1
 
-            def __init__(self):
-                self.calls = []
-                self.rows = [
-                    ("old", "D:/10-19/客户订单资料.XLS", 23255, "ACTIVE", "PI10102490", "L1PT44162A01", "2026-10-23", "1800", "2026-10-20 09:00:00"),
-                    ("new", "D:/2026-10-20/客户订单资料.XLS", 3, "ACTIVE", "PI10102490", "L1PT44162A01", "2026-10-23", "1800", "2026-10-20 10:00:00"),
-                    ("split-1", "D:/2026-10-20/客户订单资料.XLS", 79, "ACTIVE", "PI10102533", "04PO43210A01", "2026-11-15", "1500", "2026-10-20 10:00:00"),
-                    ("split-2", "D:/2026-10-20/客户订单资料.XLS", 80, "ACTIVE", "PI10102533", "04PO43210A01", "2027-02-01", "1450", "2026-10-20 10:00:00"),
-                ]
+        def __init__(self, rows):
+            self.rows = rows
+            self.calls = []
 
-            def execute(self, statement, parameters):
-                self.calls.append((statement, parameters))
-                self.rowcount = 1
+        def execute(self, statement, parameters):
+            self.calls.append((statement, parameters))
 
-            def fetchall(self):
-                return self.rows
+        def fetchall(self):
+            return self.rows
 
+    def reconcile(self, rows):
         client = object.__new__(sync.QmsDatabaseClient)
         client.tenant = "customer-b"
-        cursor = Cursor()
+        cursor = self.Cursor(rows)
+        with patch.object(client, "_read_table_columns", return_value={
+            "id": "", "tenant_code": "", "source_key": "", "source_file": "",
+            "sheet_name": "", "source_row_no": "", "business_key": "", "row_hash": "",
+            "status": "", "created_at": "", "updated_at": "",
+            "erp_order_no": "", "erp_internal_product_no": "", "erp_delivery_date": "",
+            "erp_order_placed_quantity": "", "erp_tax_inclusive_amount": "",
+        }):
+            changed = client._reconcile_customer_order_latest(cursor)
+        return changed, cursor.calls
 
-        changed = client._reconcile_customer_order_latest(cursor)
-
+    def test_same_order_and_material_updates_original_row_in_place(self) -> None:
+        changed, calls = self.reconcile([
+            ("original-id", "old-key", "D:/10-19/客户订单资料.XLS", 23255, "ACTIVE", "PI10102490", "L1PT44162A01", "2026-10-19 09:00:00"),
+            ("new-id", "new-key", "D:/2026-10-20/客户订单资料.XLS", 3, "ACTIVE", "PI10102490", "L1PT44162A01", "2026-10-20 10:00:00"),
+            ("other-material-id", "other-key", "D:/2026-10-20/客户订单资料.XLS", 4, "ACTIVE", "PI10102490", "OTHER", "2026-10-20 10:00:00"),
+        ])
         self.assertEqual(1, changed)
-        updates = [(sql, args) for sql, args in cursor.calls if sql.lstrip().startswith("UPDATE")]
-        self.assertEqual(1, len(updates))
-        self.assertIn("`status` = 'SUPERSEDED'", updates[0][0])
-        self.assertEqual(("customer-b", "old"), updates[0][1])
+        self.assertTrue(any("JOIN `qms_customer_order`" in sql and "`erp_tax_inclusive_amount`" in sql
+                            and args[0] == "new-id" and args[2] == "original-id" for sql, args in calls))
+        self.assertTrue(any(sql.lstrip().startswith("DELETE") and args[-1] == "new-id"
+                            for sql, args in calls))
+        self.assertTrue(any(sql.lstrip().startswith("UPDATE") and "`source_key` = %s" in sql
+                            and args == ("new-key", "ACTIVE", "customer-b", "original-id")
+                            for sql, args in calls))
+        self.assertFalse(any("other-material-id" in args for _, args in calls))
 
-    def test_superseded_line_reactivates_when_newer_source_is_removed(self) -> None:
-        class Cursor:
-            rowcount = 1
-
-            def __init__(self):
-                self.calls = []
-
-            def execute(self, statement, parameters):
-                self.calls.append((statement, parameters))
-
-            def fetchall(self):
-                return [
-                    ("old", "D:/10-19/客户订单资料.XLS", 23255, "SUPERSEDED", "PI10102490", "L1PT44162A01", "2026-10-23", "1800", "2026-10-20 09:00:00"),
-                ]
-
-        client = object.__new__(sync.QmsDatabaseClient)
-        client.tenant = "customer-b"
-        cursor = Cursor()
-
-        changed = client._reconcile_customer_order_latest(cursor)
-
+    def test_same_file_rows_with_different_delivery_and_quantity_are_merged(self) -> None:
+        changed, calls = self.reconcile([
+            ("first-id", "first-key", "D:/2026-10-20/客户订单资料.XLS", 79, "ACTIVE", "PI10102533", "04PO43210A01", "2026-10-20 10:00:00"),
+            ("second-id", "second-key", "D:/2026-10-20/客户订单资料.XLS", 80, "ACTIVE", "PI10102533", "04PO43210A01", "2026-10-20 10:00:00"),
+        ])
         self.assertEqual(1, changed)
-        updates = [(sql, args) for sql, args in cursor.calls if sql.lstrip().startswith("UPDATE")]
-        self.assertEqual(1, len(updates))
-        self.assertIn("`status` = 'ACTIVE'", updates[0][0])
-        self.assertEqual(("customer-b", "old"), updates[0][1])
-
-    def test_ambiguous_lines_in_one_export_are_left_alone(self) -> None:
-        class Cursor:
-            def __init__(self):
-                self.calls = []
-
-            def execute(self, statement, parameters):
-                self.calls.append((statement, parameters))
-
-            def fetchall(self):
-                return [
-                    ("a", "D:/10-19/客户订单资料.XLS", 10246, "ACTIVE", "PI10093380", "04PC40817A01", "2025-11-02", "2004", "2026-10-21 11:00:00"),
-                    ("b", "D:/10-19/客户订单资料.XLS", 10247, "ACTIVE", "PI10093380", "04PC40817A01", "2025-11-02", "2004", "2026-10-21 11:00:00"),
-                    ("c", "D:/2026-10-20/客户订单资料.XLS", 4, "ACTIVE", "PI10093380", "04PC40817A01", "2025-11-02", "2004", "2026-10-20 11:00:00"),
-                ]
-
-        client = object.__new__(sync.QmsDatabaseClient)
-        client.tenant = "customer-b"
-        cursor = Cursor()
-        self.assertEqual(0, client._reconcile_customer_order_latest(cursor))
-        self.assertEqual(1, len(cursor.calls))
+        self.assertTrue(any("JOIN `qms_customer_order`" in sql and args[0] == "second-id"
+                            for sql, args in calls))
+        self.assertTrue(any(sql.lstrip().startswith("DELETE") and args[-1] == "second-id"
+                            for sql, args in calls))
 
     def test_export_date_beats_later_import_time(self) -> None:
-        class Cursor:
-            rowcount = 1
+        changed, calls = self.reconcile([
+            ("old-id", "old-key", "D:/10-19/客户订单资料.XLS", 23255, "ACTIVE", "PI10102490", "L1PT44162A01", "2026-10-21 12:00:00"),
+            ("new-id", "new-key", "D:/2026-10-20/客户订单资料.XLS", 3, "ACTIVE", "PI10102490", "L1PT44162A01", "2026-10-20 10:00:00"),
+        ])
+        self.assertEqual(1, changed)
+        self.assertTrue(any(sql.lstrip().startswith("DELETE") and args[-1] == "old-id"
+                            for sql, args in calls))
 
-            def __init__(self):
-                self.calls = []
-
-            def execute(self, statement, parameters):
-                self.calls.append((statement, parameters))
-
-            def fetchall(self):
-                return [
-                    ("old", "D:/10-19/客户订单资料.XLS", 23255, "ACTIVE", "PI10102490", "L1PT44162A01", "2026-10-23", "1800", "2026-10-21 12:00:00"),
-                    ("new", "D:/2026-10-20/客户订单资料.XLS", 3, "ACTIVE", "PI10102490", "L1PT44162A01", "2026-10-23", "1800", "2026-10-20 10:00:00"),
-                ]
-
-        client = object.__new__(sync.QmsDatabaseClient)
-        client.tenant = "customer-b"
-        cursor = Cursor()
-        self.assertEqual(1, client._reconcile_customer_order_latest(cursor))
-        updates = [(sql, args) for sql, args in cursor.calls if sql.lstrip().startswith("UPDATE")]
-        self.assertEqual(("customer-b", "old"), updates[0][1])
+    def test_lone_superseded_row_becomes_active(self) -> None:
+        changed, calls = self.reconcile([
+            ("old-id", "old-key", "D:/10-19/客户订单资料.XLS", 23255, "SUPERSEDED", "PI10102490", "L1PT44162A01", "2026-10-19 09:00:00"),
+        ])
+        self.assertEqual(1, changed)
+        self.assertEqual(("old-key", "ACTIVE", "customer-b", "old-id"), calls[-1][1])
 
 
 class ResumeTests(unittest.TestCase):
@@ -408,13 +375,14 @@ class ResumeTests(unittest.TestCase):
             config = {"initialization_directory": str(source), "incremental_directory": "", "skip_initialization": False}
             _, state = sync.build_source_scan_plan(config, {})
             state[sync.SOURCE_IDENTITY_VERSION_STATE_KEY] = "2"
+            state[sync.CUSTOMER_ORDER_RECONCILE_STATE_KEY] = "1"
             client = Client()
             with patch.object(sync, "state_path", return_value=root / "state.json"), \
                     patch.object(sync, "QmsDatabaseClient", return_value=client):
                 sync.save_state(state)
                 self.assertEqual(0, sync.synchronize_database_directory(config, False, lambda _: None).source_files)
                 self.assertEqual(1, client.calls)
-                self.assertEqual("1", sync.load_state()[sync.CUSTOMER_ORDER_RECONCILE_STATE_KEY])
+                self.assertEqual("2", sync.load_state()[sync.CUSTOMER_ORDER_RECONCILE_STATE_KEY])
                 sync.synchronize_database_directory(config, False, lambda _: None)
                 self.assertEqual(1, client.calls)
 
@@ -430,7 +398,8 @@ class ResumeTests(unittest.TestCase):
                 return False
 
             def commit(self):
-                pass
+                if client.reconciled != 1:
+                    raise AssertionError("customer orders must reconcile before file commit")
 
             def close(self):
                 pass

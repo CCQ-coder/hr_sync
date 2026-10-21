@@ -42,6 +42,7 @@ STATE_FILE_NAME = "qms_erp_sync_state.json"
 BASELINE_REPLAY_STATE_KEY = "baseline-replay-pending"
 SOURCE_IDENTITY_VERSION_STATE_KEY = "source-identity-version"
 CUSTOMER_ORDER_RECONCILE_STATE_KEY = "customer-order-latest-version"
+CUSTOMER_ORDER_RECONCILE_VERSION = "2"
 LOG_DIR_NAME = "logs"
 SOURCE_KEY_PREFIX = "ERP-EXCEL:"
 API_PATH = "/api/v1/integrations/work-orders"
@@ -1817,27 +1818,25 @@ class QmsDatabaseClient:
         return {str(row[0]) for row in cursor.fetchall()}
 
     def _reconcile_customer_order_latest(self, cursor) -> int:
-        """Keep one active version of each unambiguous customer-order line."""
+        """Overwrite the original row with the latest row for each order and material."""
         cursor.execute(
-            "SELECT `source_key`, `source_file`, `source_row_no`, `status`, "
-            "`erp_order_no`, `erp_internal_product_no`, `erp_delivery_date`, "
-            "`erp_order_placed_quantity`, `created_at` "
-            "FROM `qms_customer_order` WHERE `tenant_code` = %s "
-            "AND `status` IN ('ACTIVE', 'SUPERSEDED')",
+            "SELECT `id`, `source_key`, `source_file`, `source_row_no`, `status`, "
+            "`erp_order_no`, `erp_internal_product_no`, `created_at` "
+            "FROM `qms_customer_order` WHERE `tenant_code` = %s",
             (self.tenant,),
         )
-        groups: Dict[Tuple[str, str, str, str], List[Tuple[Any, ...]]] = {}
+        groups: Dict[Tuple[str, str], List[Tuple[Any, ...]]] = {}
         for row in cursor.fetchall():
-            key = tuple(as_text(value).strip() for value in row[4:8])
+            key = tuple(as_text(value).strip() for value in row[5:7])
             if all(key):
                 groups.setdefault(key, []).append(row)
 
         def source_date(row: Tuple[Any, ...]) -> date:
-            created = row[8]
+            created = row[7]
             if isinstance(created, str):
                 created = datetime.fromisoformat(created)
             year = created.year if isinstance(created, (date, datetime)) else date.today().year
-            for part in reversed(str(row[1]).replace("\\", "/").split("/")[:-1]):
+            for part in reversed(str(row[2]).replace("\\", "/").split("/")[:-1]):
                 full = re.fullmatch(r"(20\d{2})-(\d{1,2})-(\d{1,2})", part)
                 short = re.fullmatch(r"(\d{1,2})-(\d{1,2})", part)
                 try:
@@ -1850,25 +1849,54 @@ class QmsDatabaseClient:
             return date.min
 
         changed = 0
+        copy_columns: Optional[List[str]] = None
         for rows in groups.values():
-            # Two matching rows in the same export may represent distinct ERP
-            # lines with different prices or production details.
-            if len({row[1] for row in rows}) != len(rows):
-                continue
-            winner = max(rows, key=lambda row: (
-                source_date(row), str(row[8]), int(row[2]), str(row[0]),
+            current_rows = [row for row in rows if row[4] != "INACTIVE"]
+            candidates = current_rows or rows
+            latest = max(candidates, key=lambda row: (
+                source_date(row), str(row[7]), int(row[3]), str(row[1]),
             ))
-            for row in rows:
-                status = "ACTIVE" if row is winner else "SUPERSEDED"
-                if row[3] == status:
-                    continue
+            original = min(rows, key=lambda row: (str(row[7]), str(row[0])))
+            status = "ACTIVE" if current_rows else "INACTIVE"
+            if len(rows) > 1:
+                if copy_columns is None:
+                    copy_columns = [column for column in self._read_table_columns(
+                        cursor, "qms_customer_order",
+                    ) if column not in {
+                        "id", "tenant_code", "source_key", "status", "created_at", "updated_at",
+                    }]
+                if original is not latest:
+                    assignments = ", ".join(
+                        f"original.`{column.replace('`', '``')}` = latest.`{column.replace('`', '``')}`"
+                        for column in copy_columns
+                    )
+                    cursor.execute(
+                        "UPDATE `qms_customer_order` AS original "
+                        "JOIN `qms_customer_order` AS latest ON latest.`id` = %s "
+                        f"SET {assignments}, original.`updated_at` = CURRENT_TIMESTAMP(6) "
+                        "WHERE original.`tenant_code` = %s AND original.`id` = %s "
+                        "AND latest.`tenant_code` = %s",
+                        (latest[0], self.tenant, original[0], self.tenant),
+                    )
+                duplicates = [row[0] for row in rows if row is not original]
+                for offset in range(0, len(duplicates), 500):
+                    batch = duplicates[offset:offset + 500]
+                    placeholders = ", ".join(["%s"] * len(batch))
+                    cursor.execute(
+                        f"DELETE FROM `qms_customer_order` WHERE `tenant_code` = %s "
+                        f"AND `id` IN ({placeholders})",
+                        (self.tenant, *batch),
+                    )
+                    changed += cursor.rowcount
+            if original[1] != latest[1] or original[4] != status:
                 cursor.execute(
-                    f"UPDATE `qms_customer_order` SET `status` = '{status}', "
+                    "UPDATE `qms_customer_order` SET `source_key` = %s, `status` = %s, "
                     "`updated_at` = CURRENT_TIMESTAMP(6) "
-                    "WHERE `tenant_code` = %s AND `source_key` = %s",
-                    (self.tenant, row[0]),
+                    "WHERE `tenant_code` = %s AND `id` = %s",
+                    (latest[1], status, self.tenant, original[0]),
                 )
-                changed += cursor.rowcount
+                if len(rows) == 1:
+                    changed += cursor.rowcount
         return changed
 
     def _source_records_for_file(
@@ -2172,11 +2200,11 @@ def synchronize_database_directory(
             connection.close()
 
     if not scan_groups:
-        if not dry_run and previous.get(CUSTOMER_ORDER_RECONCILE_STATE_KEY) != "1":
+        if not dry_run and previous.get(CUSTOMER_ORDER_RECONCILE_STATE_KEY) != CUSTOMER_ORDER_RECONCILE_VERSION:
             changed = reconcile_customer_orders()
-            previous[CUSTOMER_ORDER_RECONCILE_STATE_KEY] = "1"
+            previous[CUSTOMER_ORDER_RECONCILE_STATE_KEY] = CUSTOMER_ORDER_RECONCILE_VERSION
             save_state(previous)
-            callback(f"已整理存量客户订单：调整 {changed:,} 条记录的生效状态。")
+            callback(f"已整理存量客户订单：合并或更新 {changed:,} 条记录。")
         elif not dry_run and progress_directory().is_dir():
             save_state(previous)
         if not dry_run:
@@ -2313,6 +2341,14 @@ def synchronize_database_directory(
                             raise SyncError(f"源文件处理期间发生覆盖：{relative_file}；请重试。")
                         removed = removed_file_membership(next_state, file_key, membership)
                         deactivated_for_file = client._deactivate_removed_file_records(cursor, removed)
+                        customer_order_in_file = (
+                            "qms_customer_order" in membership["raw"]
+                            or "qms_customer_order" in removed["raw"]
+                        )
+                        reconciled_for_file = (
+                            client._reconcile_customer_order_latest(cursor)
+                            if customer_order_in_file else 0
+                        )
                     connection.commit()
                 except Exception as exc:
                     try:
@@ -2343,10 +2379,9 @@ def synchronize_database_directory(
             save_file_progress(file_key, file_state)
             next_state.update(file_state)
             deactivated += deactivated_for_file
-            customer_order_touched |= (
-                "qms_customer_order" in membership["raw"]
-                or "qms_customer_order" in removed["raw"]
-            )
+            customer_order_touched |= customer_order_in_file
+            if customer_order_in_file:
+                callback(f"已合并或更新 {reconciled_for_file:,} 条客户订单记录。")
             callback(f"已提交并保存断点：{relative_file}。")
 
     work_order_added = work_order_updated = 0
@@ -2363,11 +2398,11 @@ def synchronize_database_directory(
     if dry_run:
         callback("预演模式：已遍历全部 Excel 文件和工作表，未向 QMS 写入任何数据。")
     else:
-        if customer_order_touched or previous.get(CUSTOMER_ORDER_RECONCILE_STATE_KEY) != "1":
-            changed = reconcile_customer_orders() if customer_order_touched or customer_order_preexisting else 0
-            next_state[CUSTOMER_ORDER_RECONCILE_STATE_KEY] = "1"
-            if customer_order_touched or customer_order_preexisting:
-                callback(f"已整理客户订单：调整 {changed:,} 条记录的生效状态。")
+        if previous.get(CUSTOMER_ORDER_RECONCILE_STATE_KEY) != CUSTOMER_ORDER_RECONCILE_VERSION:
+            changed = reconcile_customer_orders() if customer_order_preexisting and not customer_order_touched else 0
+            next_state[CUSTOMER_ORDER_RECONCILE_STATE_KEY] = CUSTOMER_ORDER_RECONCILE_VERSION
+            if customer_order_preexisting and not customer_order_touched:
+                callback(f"已整理客户订单：合并或更新 {changed:,} 条记录。")
         if any(group.role == "incremental" for group in scan_groups):
             next_state[BASELINE_REPLAY_STATE_KEY] = "0"
         save_state(next_state)
