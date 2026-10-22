@@ -89,6 +89,29 @@ BUSINESS_SOURCE_TABLES = frozenset(
     [destination for _, destination in BUSINESS_SOURCE_TABLE_BY_FILE] + [UNCLASSIFIED_SOURCE_TABLE]
 )
 
+# Use ERP identifiers rather than the export's file, row, headers or mutable amounts.
+# Each inner tuple is an alternative identity, in preference order.
+ERP_ROW_IDENTITIES: Mapping[str, Tuple[Tuple[str, ...], ...]] = {
+    "qms_customer_order": (("erp_order_no", "erp_internal_product_no"), ("erp_order_no", "erp_customer_part_no"), ("erp_order_no", "erp_material_code"), ("erp_order_no",)),
+    "qms_customer_part": (("erp_internal_product_no",), ("erp_customer_code", "erp_customer_part_no")),
+    "qms_engineering_data": (("erp_mi_id",), ("erp_internal_product_no", "erp_version"), ("erp_internal_product_no",)),
+    "qms_purchase_order": (("erp_purchase_order_no", "erp_material_no"), ("erp_purchase_order_no",)),
+    "qms_material": (("erp_material_no",),),
+    "qms_material_receipt": (("erp_receipt_no", "erp_receipt_detail_no"), ("erp_receipt_detail_no",), ("erp_receipt_no", "erp_material_no"), ("erp_receipt_no",)),
+    "qms_material_issue": (("erp_material_issue_detail_id",), ("erp_material_issue_id", "erp_material_no_id"), ("erp_material_issue_no", "erp_material_no_source_3b3dc2fa70"), ("erp_material_issue_no", "erp_material_no_source_3d14d54480"), ("erp_material_issue_no",)),
+    "qms_finished_goods_receipt": (("erp_combined_panel_detail_id",), ("erp_receipt_no", "erp_carton_no", "erp_internal_product_no"), ("erp_receipt_no", "erp_internal_product_no"), ("erp_receipt_no",)),
+    "qms_delivery_note": (("erp_delivery_note_no", "erp_internal_product_no"), ("erp_delivery_note_no",)),
+    "qms_work_order": (("erp_production_order_no",),),
+}
+
+
+def erp_row_identity(table: str, values: Mapping[str, Optional[str]]) -> str:
+    for columns in ERP_ROW_IDENTITIES.get(table, ()):
+        if all(values.get(column) for column in columns):
+            return json.dumps([(column, values[column]) for column in columns], ensure_ascii=False)
+    # shortcut: sources without reviewed row IDs use canonical field content; add ERP row IDs when supplied.
+    return json.dumps(sorted(values.items()), ensure_ascii=False, separators=(",", ":"))
+
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     # source_directory is retained as a read-only compatibility alias for
@@ -591,6 +614,33 @@ def source_file_content_hash(path: Path) -> str:
 def source_file_state_key(role: str, directory: Path, path: Path) -> str:
     relative = path.relative_to(directory).as_posix().casefold()
     return f"source-file:{role}:{relative}"
+
+
+def file_membership_state_key(file_key: str) -> str:
+    return f"file-membership:{file_key}"
+
+
+def removed_source_membership(
+    state: Mapping[str, str], current: Mapping[str, Mapping[str, set[str]]],
+) -> Dict[str, set[str]]:
+    """Keys removed from scanned files, except keys still owned by another file."""
+    remaining: Dict[str, set[str]] = {}
+    removed: Dict[str, set[str]] = {}
+    for key, value in state.items():
+        if not key.startswith("file-membership:"):
+            continue
+        old = json.loads(value)
+        now = current.get(key, old)
+        for table, keys in now.items():
+            remaining.setdefault(table, set()).update(keys)
+        if key in current:
+            for table, keys in old.items():
+                removed.setdefault(table, set()).update(set(keys) - set(now.get(table, ())))
+    for key, membership in current.items():
+        if key not in state:
+            for table, keys in membership.items():
+                remaining.setdefault(table, set()).update(keys)
+    return {table: keys - remaining.get(table, set()) for table, keys in removed.items() if keys}
 
 
 def build_source_scan_plan(
@@ -1298,23 +1348,24 @@ def _source_record_pair(
     callback: Callable[[str], None],
 ) -> Iterable[Tuple[RawSourceRecord, Optional[Dict[str, Any]]]]:
     """Build a source record and, where applicable, its work-order view."""
-    row_document = json.dumps(raw_data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    # shortcut: equal-value distinct events collapse, use reviewed table-specific IDs when available.
-    identity = f"{source_table or 'qms_work_order'}\x1f{row_document}"
+    field_values = {
+        field.database_column: database_cell_value(value)
+        for field, value in zip(definitions, raw_data.values())
+    }
+    row_document = json.dumps(field_values or raw_data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    table_name = source_table or "qms_work_order"
+    identity = f"{table_name}\x1f{erp_row_identity(table_name, field_values or raw_data)}"
     raw = RawSourceRecord(
         source_file=relative_file,
         sheet_name=sheet_name,
         source_row_no=row_no,
         business_key=raw_business_key(row, row_no),
-        source_key=hashlib.sha256(identity.encode("utf-8")).hexdigest(),
+        source_key="ERP4:" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:59],
         row_hash=hashlib.sha256(row_document.encode("utf-8")).hexdigest(),
         # Definitions and raw_data are both built in worksheet column order.
         # Pair by position so the reviewed field mapping still works when an
         # allowed daily-export header alias differs only in leading slashes.
-        field_values={
-            field.database_column: database_cell_value(value)
-            for field, value in zip(definitions, raw_data.values())
-        },
+        field_values=field_values,
         source_table=source_table,
         field_definitions={field.database_column: field for field in definitions},
     )
@@ -1450,6 +1501,7 @@ class QmsDatabaseClient:
         self.timeout = int(config.get("request_timeout_seconds", 30))
         self._table_columns: Dict[str, Dict[str, str]] = {}
         self._legacy_json_checked: set[str] = set()
+        self._identity_checked: set[str] = set()
         if not all((self.host, self.port, self.database, self.username, self.tenant)):
             raise SyncError("请完整填写数据库主机、端口、库名、账号和 QMS 租户编码。")
         try:
@@ -1632,6 +1684,11 @@ class QmsDatabaseClient:
         if ensure_schema:
             self._ensure_source_table_schema(cursor, table_name, fields)
         table = self._table_name(table_name)
+        if ensure_schema and table_name not in self._identity_checked:
+            cursor.execute(f"SELECT 1 FROM {table} WHERE `source_key` NOT LIKE 'ERP4:%' LIMIT 1")
+            if cursor.fetchone():
+                raise SyncError("数据库中仍有旧版来源键；请先使用“清空并重新初始化”。")
+            self._identity_checked.add(table_name)
         value_columns = [
             "id", "tenant_code", "source_key", "source_file", "sheet_name", "source_row_no",
             "business_key", "row_hash", *erp_columns,
@@ -1689,6 +1746,22 @@ class QmsDatabaseClient:
         cursor.execute("DELETE FROM `qms_work_order`")
         for table_name in sorted(self._existing_source_tables(cursor)):
             cursor.execute(f"DELETE FROM {self._table_name(table_name)}")
+
+    def _deactivate_source_keys(self, cursor, removed: Mapping[str, set[str]]) -> int:
+        total = 0
+        for table_name, source_keys in removed.items():
+            keys = sorted(source_keys)
+            for offset in range(0, len(keys), 500):
+                batch = keys[offset:offset + 500]
+                placeholders = ", ".join(["%s"] * len(batch))
+                cursor.execute(
+                    f"UPDATE {self._table_name(table_name)} SET `status` = 'INACTIVE', "
+                    "`updated_at` = CURRENT_TIMESTAMP(6) "
+                    f"WHERE `tenant_code` = %s AND `status` = 'ACTIVE' AND `source_key` IN ({placeholders})",
+                    (self.tenant, *batch),
+                )
+                total += cursor.rowcount
+        return total
 
     def _reconcile_source_snapshot(
         self, cursor, source_keys_by_table: Mapping[str, Sequence[str]], existing_tables: set[str],
@@ -1946,8 +2019,7 @@ def synchronize_database_directory(
     if initialize and bool(config.get("skip_initialization", False)):
         raise SyncError("清空并重新初始化需要选择初始化数据目录，不能勾选“跳过初始化”。")
     previous = {} if initialize else load_state()
-    if not initialize and any(key.startswith("raw:") for key in previous) \
-            and previous.get(SOURCE_IDENTITY_VERSION_STATE_KEY) != "3":
+    if not initialize and not dry_run and previous.get(SOURCE_IDENTITY_VERSION_STATE_KEY) != "4":
         raise SyncError("来源键规则已更新；请先使用“清空并重新初始化”重建数据和断点。")
     next_state: Dict[str, str] = dict(previous)
     scan_groups, file_checkpoints = build_source_scan_plan(config, previous, force_all=initialize)
@@ -1969,6 +2041,11 @@ def synchronize_database_directory(
     connection = None
     existing_tables: set[str] = set()
     deactivated = 0
+    current_membership: Dict[str, Dict[str, set[str]]] = {
+        file_membership_state_key(source_file_state_key(group.role, group.directory, path)): {}
+        for group in scan_groups for path in group.files
+    }
+    seen_in_file: set[Tuple[str, str, str]] = set()
 
     if not scan_groups:
         callback("未发现需要处理的新增或变更 Excel 文件，本次不连接数据库。")
@@ -2000,18 +2077,30 @@ def synchronize_database_directory(
             pending_table = None
             pending_records = []
 
-        def planned_records() -> Iterable[Tuple[RawSourceRecord, Optional[Dict[str, Any]]]]:
+        def planned_records() -> Iterable[Tuple[SourceScanGroup, RawSourceRecord, Optional[Dict[str, Any]]]]:
             for group in scan_groups:
                 label = "初始化数据" if group.role == "initialization" else "增量数据"
                 callback(f"开始处理{label}目录：{group.directory}")
-                yield from iter_all_source_records(
+                for raw, payload in iter_all_source_records(
                     config, callback, stats,
                     source_directory=group.directory, selected_files=group.files,
-                )
+                ):
+                    yield group, raw, payload
 
-        for raw, payload in planned_records():
+        for group, raw, payload in planned_records():
             if raw.source_table:
                 source_tables.add(raw.source_table)
+                membership_key = file_membership_state_key(source_file_state_key(
+                    group.role, group.directory, group.directory / raw.source_file,
+                ))
+                duplicate = (membership_key, raw.source_table, raw.source_key)
+                if duplicate in seen_in_file:
+                    raise SyncError(
+                        f"同一 Excel 中有无法区分的重复明细：{raw.source_file} / {raw.sheet_name} "
+                        f"第 {raw.source_row_no} 行；请提供明细编号。"
+                    )
+                seen_in_file.add(duplicate)
+                current_membership[membership_key].setdefault(raw.source_table, set()).add(raw.source_key)
             raw_state_key = f"raw:{raw.source_key}"
             previous_hash = previous.get(raw_state_key)
             next_state[raw_state_key] = raw.row_hash
@@ -2112,6 +2201,10 @@ def synchronize_database_directory(
                     if deactivate_missing:
                         existing_tables = client._existing_source_tables(cursor)
                     process(cursor)
+                    if not initialize:
+                        deactivated = client._deactivate_source_keys(
+                            cursor, removed_source_membership(previous, current_membership),
+                        )
                     if initialize and any(
                         source_file_content_hash(path) != digest for path, digest in checked_files.items()
                     ):
@@ -2156,8 +2249,16 @@ def synchronize_database_directory(
     )
     if not dry_run:
         next_state.update(file_checkpoints)
-        next_state[SOURCE_IDENTITY_VERSION_STATE_KEY] = "3"
-        save_state(next_state)
+        next_state.update({
+            key: json.dumps({table: sorted(keys) for table, keys in membership.items()},
+                            ensure_ascii=False, separators=(",", ":"))
+            for key, membership in current_membership.items()
+        })
+        next_state[SOURCE_IDENTITY_VERSION_STATE_KEY] = "4"
+        try:
+            save_state(next_state)
+        except OSError as exc:
+            raise SyncError("数据库已提交，但本机同步断点保存失败；请修复磁盘权限后重新初始化。") from exc
         callback("文件处理状态已保存；后续只处理新增或变更的 Excel 文件。")
 
     summary = SyncSummary(
