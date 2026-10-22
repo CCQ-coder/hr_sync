@@ -53,7 +53,7 @@ class FileCheckpointTests(unittest.TestCase):
             groups, _ = sync.build_source_scan_plan(second_config, previous)
             self.assertEqual([files[1][1]], list(groups[0].files))
 
-    def test_same_path_overwrite_keeps_row_key_and_changes_content_hash(self) -> None:
+    def test_same_path_overwrite_changes_content_key_and_hash(self) -> None:
         class Registry:
             def canonical_headers_for(self, _source_file, headers):
                 return headers
@@ -82,8 +82,38 @@ class FileCheckpointTests(unittest.TestCase):
             before = scan()
             write_order("B")
             after = scan()
-            self.assertEqual(before.source_key, after.source_key)
+            self.assertNotEqual(before.source_key, after.source_key)
             self.assertNotEqual(before.row_hash, after.row_hash)
+
+    def test_same_record_in_two_exports_uses_one_source_key(self) -> None:
+        class Registry:
+            def canonical_headers_for(self, _source_file, headers):
+                return headers
+
+            def resolve_sheet(self, *_args):
+                return []
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            paths = []
+            for day in ("10-19", "10-20"):
+                folder = root / day
+                folder.mkdir()
+                path = folder / "客户订单资料.xlsx"
+                workbook = Workbook()
+                workbook.active.append(["客户订单号"])
+                workbook.active.append(["A"])
+                workbook.save(path)
+                paths.append(path)
+            with patch.object(sync, "load_erp_field_registry", return_value=Registry()):
+                keys = [
+                    next(iter(sync.iter_all_source_records(
+                        {}, lambda _: None, sync.SourceScanStats(),
+                        source_directory=root, selected_files=(path,),
+                    )))[0].source_key
+                    for path in paths
+                ]
+            self.assertEqual(keys[0], keys[1])
 
     def test_same_size_and_mtime_overwrite_is_detected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -374,7 +404,7 @@ class ResumeTests(unittest.TestCase):
             (source / "客户订单资料.xls").write_bytes(b"already-imported")
             config = {"initialization_directory": str(source), "incremental_directory": "", "skip_initialization": False}
             _, state = sync.build_source_scan_plan(config, {})
-            state[sync.SOURCE_IDENTITY_VERSION_STATE_KEY] = "2"
+            state[sync.SOURCE_IDENTITY_VERSION_STATE_KEY] = "3"
             state[sync.CUSTOMER_ORDER_RECONCILE_STATE_KEY] = "1"
             client = Client()
             with patch.object(sync, "state_path", return_value=root / "state.json"), \
@@ -386,7 +416,7 @@ class ResumeTests(unittest.TestCase):
                 sync.synchronize_database_directory(config, False, lambda _: None)
                 self.assertEqual(1, client.calls)
 
-    def test_existing_legacy_row_is_used_during_file_sync(self) -> None:
+    def test_file_sync_does_not_reuse_a_legacy_location_key(self) -> None:
         class Connection:
             def cursor(self):
                 return self
@@ -416,7 +446,7 @@ class ResumeTests(unittest.TestCase):
                 return {"qms_customer_order"}
 
             def _source_records_for_file(self, _cursor, _table, relative, _absolute):
-                return {sync.legacy_source_key(relative, "Test", 2): (relative, "same-hash")}
+                raise AssertionError("location-based legacy key must not be reused")
 
             def _upsert_source_records(self, _cursor, _table, records):
                 self.written_keys.extend(record.source_key for record in records)
@@ -450,12 +480,10 @@ class ResumeTests(unittest.TestCase):
                     patch.object(sync, "iter_all_source_records", side_effect=fake_records), \
                     patch.object(sync, "QmsDatabaseClient", return_value=client):
                 sync.synchronize_database_directory(config, False, messages.append)
-                old_key = sync.legacy_source_key("客户订单资料.xls", "Test", 2)
-                self.assertEqual([old_key], client.written_keys)
+                self.assertEqual(["new-key"], client.written_keys)
                 self.assertEqual(1, client.reconciled)
                 state = sync.load_state()
-                self.assertEqual("same-hash", state[f"raw:{old_key}"])
-                self.assertTrue(any("复用旧版源记录 1 条" in message for message in messages))
+                self.assertEqual("same-hash", state["raw:new-key"])
 
     def test_file_replaced_while_reading_does_not_advance_checkpoint(self) -> None:
         class FakeConnection:

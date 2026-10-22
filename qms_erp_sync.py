@@ -20,7 +20,7 @@ import traceback
 import urllib.error
 import urllib.request
 import uuid
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -698,7 +698,7 @@ def removed_file_membership(
 
 
 def build_source_scan_plan(
-    config: Mapping[str, Any], previous: Mapping[str, str],
+    config: Mapping[str, Any], previous: Mapping[str, str], *, force_all: bool = False,
 ) -> Tuple[List[SourceScanGroup], Dict[str, str]]:
     """Select only new/changed files, replaying deltas after a baseline change."""
     initialization, incremental, skip_initialization = configured_source_directories(config)
@@ -718,7 +718,7 @@ def build_source_scan_plan(
             key = source_file_state_key("initialization", root, path)
             value = source_file_checkpoint(path)
             checkpoints[key] = value
-            if previous.get(key) != value:
+            if force_all or previous.get(key) != value:
                 changed.append(path)
         if changed:
             initialization_changed = True
@@ -732,7 +732,7 @@ def build_source_scan_plan(
             key = source_file_state_key("incremental", root, path)
             value = source_file_checkpoint(path)
             checkpoints[key] = value
-            if initialization_changed or previous.get(BASELINE_REPLAY_STATE_KEY) == "1" \
+            if force_all or initialization_changed or previous.get(BASELINE_REPLAY_STATE_KEY) == "1" \
                     or previous.get(key) != value:
                 changed.append(path)
         if changed:
@@ -1410,8 +1410,9 @@ def _source_record_pair(
     source_location: str,
 ) -> Iterable[Tuple[RawSourceRecord, Optional[Dict[str, Any]]]]:
     """Build a source record and, where applicable, its work-order view."""
-    identity = "\x1f".join(("v2", source_location.casefold(), sheet_name.casefold(), str(row_no)))
     row_document = json.dumps(raw_data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    # shortcut: equal-value distinct events collapse, use reviewed table-specific IDs when available.
+    identity = f"{source_table or 'qms_work_order'}\x1f{row_document}"
     raw = RawSourceRecord(
         source_file=source_location,
         sheet_name=sheet_name,
@@ -1708,7 +1709,9 @@ class QmsDatabaseClient:
             self._legacy_json_checked.add(table_name)
         self._ensure_erp_columns(cursor, table_name, fields)
 
-    def _upsert_source_records(self, cursor, table_name: str, records: Sequence[RawSourceRecord]) -> None:
+    def _upsert_source_records(
+        self, cursor, table_name: str, records: Sequence[RawSourceRecord], *, ensure_schema: bool = True,
+    ) -> None:
         """Idempotently write a batch without trusting the local cache as truth."""
         if not records:
             return
@@ -1722,7 +1725,8 @@ class QmsDatabaseClient:
                 fields[name] = field
         self._validate_erp_field_definitions(table_name, fields)
         erp_columns = sorted(fields)
-        self._ensure_source_table_schema(cursor, table_name, fields)
+        if ensure_schema:
+            self._ensure_source_table_schema(cursor, table_name, fields)
         table = self._table_name(table_name)
         value_columns = [
             "id", "tenant_code", "source_key", "source_file", "sheet_name", "source_row_no",
@@ -1816,6 +1820,13 @@ class QmsDatabaseClient:
             tuple(BUSINESS_SOURCE_TABLES),
         )
         return {str(row[0]) for row in cursor.fetchall()}
+
+    def _clear_target_tables(self, cursor) -> None:
+        """Delete every tenant's rows inside the full-rebuild transaction."""
+        cursor.execute("DELETE FROM `qms_production_batch`")
+        cursor.execute("DELETE FROM `qms_work_order`")
+        for table_name in sorted(self._existing_source_tables(cursor)):
+            cursor.execute(f"DELETE FROM {self._table_name(table_name)}")
 
     def _reconcile_customer_order_latest(self, cursor) -> int:
         """Overwrite the original row with the latest row for each order and material."""
@@ -2006,7 +2017,9 @@ class QmsDatabaseClient:
         finally:
             connection.close()
 
-    def _upsert_work_order(self, cursor, payload: Mapping[str, Any]) -> str:
+    def _upsert_work_order(
+        self, cursor, payload: Mapping[str, Any], *, ensure_schema: bool = True,
+    ) -> str:
         mapped_columns = [column for column, _ in WORK_ORDER_DB_FIELDS]
         raw_erp_fields = payload.get("erpFields", {})
         if not isinstance(raw_erp_fields, Mapping):
@@ -2014,7 +2027,8 @@ class QmsDatabaseClient:
         fields = payload.get("erpFieldDefinitions", {})
         if not isinstance(fields, Mapping) or set(raw_erp_fields) != set(fields):
             raise SyncError("生产指示资料的 ERP 字段值与字段定义不一致。")
-        self._ensure_erp_columns(cursor, "qms_work_order", fields)
+        if ensure_schema:
+            self._ensure_erp_columns(cursor, "qms_work_order", fields)
         erp_columns = sorted(fields)
         columns = [
             "id", "tenant_code", "work_order_no", *mapped_columns, *erp_columns,
@@ -2158,20 +2172,23 @@ class QmsGatewayClient:
 
 
 def synchronize_database_directory(
-    config: Mapping[str, Any], dry_run: bool, callback: Callable[[str], None],
+    config: Mapping[str, Any], dry_run: bool, callback: Callable[[str], None], *, initialize: bool = False,
 ) -> SyncSummary:
     """Commit one workbook at a time and resume after the last committed file."""
-    loaded_state = load_state()
-    state_uses_absolute_paths = loaded_state.get(SOURCE_IDENTITY_VERSION_STATE_KEY) == "2"
-    # Old row hashes and file memberships refer to relative-path identities.
-    # Older checkpoints cannot identify files when a daily root changes.
-    previous = loaded_state if state_uses_absolute_paths else {}
+    if initialize and bool(config.get("skip_initialization", False)):
+        raise SyncError("清空并重新初始化需要选择初始化数据目录，不能勾选“跳过初始化”。")
+    loaded_state = {} if initialize else load_state()
+    if loaded_state.get(SOURCE_IDENTITY_VERSION_STATE_KEY) != "3" and any(
+        key.startswith(("raw:", "work-order:", "file-membership:")) for key in loaded_state
+    ):
+        raise SyncError("来源键规则已更新；请先使用“清空并重新初始化”重建数据和断点。")
+    previous = loaded_state
     next_state: Dict[str, str] = dict(previous)
-    scan_groups, _ = build_source_scan_plan(config, previous)
+    scan_groups, _ = build_source_scan_plan(config, previous, force_all=initialize)
     initialization, incremental, _ = configured_source_directories(config)
     source_description = f"初始化={initialization or '已跳过'}；增量={incremental or '未配置'}"
     stats = SourceScanStats()
-    added = updated = unchanged = written_raw = written_work_orders = deactivated = legacy_reused = 0
+    added = updated = unchanged = written_raw = written_work_orders = deactivated = 0
     work_order_hashes: Dict[str, str] = {}
     work_order_sources: Dict[str, str] = {}
     source_tables: set[str] = set()
@@ -2218,7 +2235,7 @@ def synchronize_database_directory(
         )
 
     def process_file(group: SourceScanGroup, path: Path, cursor) -> Tuple[Dict[str, str], Dict[str, Any]]:
-        nonlocal added, updated, unchanged, written_raw, written_work_orders, legacy_reused
+        nonlocal added, updated, unchanged, written_raw, written_work_orders
         nonlocal customer_order_preexisting
         pending_table: Optional[str] = None
         pending_records: List[RawSourceRecord] = []
@@ -2227,16 +2244,18 @@ def synchronize_database_directory(
         order_keys: set[str] = set()
         batch_keys: set[str] = set()
         relative_file = path.relative_to(group.directory).as_posix()
-        existing_tables = client._existing_source_tables(cursor) if cursor is not None else set()
-        customer_order_preexisting |= "qms_customer_order" in existing_tables
-        existing_rows_by_table: Dict[str, Dict[str, Tuple[str, str]]] = {}
+        if cursor is not None:
+            customer_order_preexisting |= "qms_customer_order" in client._existing_source_tables(cursor)
 
         def flush_raw_records() -> None:
             nonlocal pending_table, pending_records, written_raw
             if cursor is None or not pending_records:
                 return
             assert client is not None and pending_table is not None
-            client._upsert_source_records(cursor, pending_table, pending_records)
+            if initialize:
+                client._upsert_source_records(cursor, pending_table, pending_records, ensure_schema=False)
+            else:
+                client._upsert_source_records(cursor, pending_table, pending_records)
             written_raw += len(pending_records)
             if written_raw % 500 == 0:
                 callback(f"已写入或核验 {written_raw:,} 条 ERP 源记录…")
@@ -2246,19 +2265,6 @@ def synchronize_database_directory(
         for raw, payload in iter_all_source_records(
             config, callback, stats, source_directory=group.directory, selected_files=(path,),
         ):
-            if cursor is not None and raw.source_table:
-                if raw.source_table not in existing_rows_by_table:
-                    existing_rows_by_table[raw.source_table] = (
-                        client._source_records_for_file(
-                            cursor, raw.source_table, relative_file, raw.source_file,
-                        ) if raw.source_table in existing_tables else {}
-                    )
-                matched_key = compatible_source_key(
-                    raw, relative_file, existing_rows_by_table[raw.source_table],
-                )
-                if matched_key != raw.source_key:
-                    raw = replace(raw, source_key=matched_key)
-                    legacy_reused += 1
             if raw.source_table:
                 source_tables.add(raw.source_table)
                 raw_keys.setdefault(raw.source_table, set()).add(raw.source_key)
@@ -2299,7 +2305,10 @@ def synchronize_database_directory(
                     batch_keys.add(batch_no)
                 if cursor is not None:
                     assert client is not None
-                    work_order_id = client._upsert_work_order(cursor, payload)
+                    if initialize:
+                        work_order_id = client._upsert_work_order(cursor, payload, ensure_schema=False)
+                    else:
+                        work_order_id = client._upsert_work_order(cursor, payload)
                     client._upsert_batch(cursor, payload, work_order_id)
                     written_work_orders += 1
                     if written_work_orders % 100 == 0:
@@ -2315,7 +2324,65 @@ def synchronize_database_directory(
         }
         return file_state, membership
 
-    for group in scan_groups:
+    if initialize and not dry_run:
+        assert client is not None
+        callback("正在预检全部 Excel，并准备数据库字段；预检通过后才清空目标表。")
+        fields_by_table: Dict[str, Dict[str, ErpFieldDefinition]] = {}
+        checked_files: Dict[str, str] = {}
+        for group in scan_groups:
+            for path in group.files:
+                checked_files[str(path)] = source_file_checkpoint(path)
+                for raw, payload in iter_all_source_records(
+                    config, callback, SourceScanStats(),
+                    source_directory=group.directory, selected_files=(path,),
+                ):
+                    if raw.source_table:
+                        fields_by_table.setdefault(raw.source_table, {}).update(raw.field_definitions)
+                    if payload is not None:
+                        fields_by_table.setdefault("qms_work_order", {}).update(payload["erpFieldDefinitions"])
+                if source_file_checkpoint(path) != checked_files[str(path)]:
+                    raise SyncError(f"源文件预检期间发生覆盖：{path}；请重试。")
+        connection = client._connect()
+        try:
+            with connection.cursor() as cursor:
+                for table_name, fields in fields_by_table.items():
+                    if table_name == "qms_work_order":
+                        client._ensure_erp_columns(cursor, table_name, fields)
+                    else:
+                        client._ensure_source_table_schema(cursor, table_name, fields)
+            connection.commit()
+            with connection.cursor() as cursor:
+                if any(source_file_checkpoint(path) != checked_files[str(path)]
+                       for group in scan_groups for path in group.files):
+                    raise SyncError("源文件在预检后发生变化；数据库未清空，请重试。")
+                client._clear_target_tables(cursor)
+                for group in scan_groups:
+                    callback(f"开始处理{'初始化' if group.role == 'initialization' else '增量'}数据目录：{group.directory}")
+                    for path in group.files:
+                        file_key = source_file_state_key(group.role, group.directory, path)
+                        file_state, membership = process_file(group, path, cursor)
+                        if source_file_checkpoint(path) != checked_files[str(path)]:
+                            raise SyncError(f"源文件处理期间发生覆盖：{path}；数据库清理和导入已回滚。")
+                        file_state[file_key] = checked_files[str(path)]
+                        file_state[file_membership_state_key(file_key)] = json.dumps(
+                            membership, ensure_ascii=False, separators=(",", ":"),
+                        )
+                        next_state.update(file_state)
+                        customer_order_touched |= "qms_customer_order" in membership["raw"]
+                if customer_order_touched:
+                    client._reconcile_customer_order_latest(cursor)
+            connection.commit()
+        except Exception as exc:
+            connection.rollback()
+            if isinstance(exc, MySQLError):
+                raise SyncError(f"重新初始化失败，数据库清理和导入已回滚：{exc}") from exc
+            raise
+        finally:
+            connection.close()
+        next_state[SOURCE_IDENTITY_VERSION_STATE_KEY] = "3"
+        next_state[CUSTOMER_ORDER_RECONCILE_STATE_KEY] = CUSTOMER_ORDER_RECONCILE_VERSION
+
+    for group in (() if initialize and not dry_run else scan_groups):
         label = "初始化数据" if group.role == "initialization" else "增量数据"
         callback(f"开始处理{label}目录：{group.directory}")
         for path in group.files:
@@ -2368,7 +2435,7 @@ def synchronize_database_directory(
                 except Exception:
                     pass
             file_state[file_key] = checkpoint
-            file_state[SOURCE_IDENTITY_VERSION_STATE_KEY] = "2"
+            file_state[SOURCE_IDENTITY_VERSION_STATE_KEY] = "3"
             if group.role == "initialization" and any(
                 planned.role == "incremental" for planned in scan_groups
             ):
@@ -2392,21 +2459,22 @@ def synchronize_database_directory(
         elif old_hash != value_hash:
             work_order_updated += 1
     callback(f"变更分析（与本机上次扫描相比）：新增 {added:,}，修改 {updated:,}，未变 {unchanged:,}。")
-    if legacy_reused:
-        callback(f"复用旧版源记录 {legacy_reused:,} 条，未为这些记录另建新行。")
     callback(f"工单映射：{stats.work_order_records:,} 条，新增 {work_order_added:,}，修改 {work_order_updated:,}。")
     if dry_run:
         callback("预演模式：已遍历全部 Excel 文件和工作表，未向 QMS 写入任何数据。")
     else:
-        if previous.get(CUSTOMER_ORDER_RECONCILE_STATE_KEY) != CUSTOMER_ORDER_RECONCILE_VERSION:
+        if not initialize and previous.get(CUSTOMER_ORDER_RECONCILE_STATE_KEY) != CUSTOMER_ORDER_RECONCILE_VERSION:
             changed = reconcile_customer_orders() if customer_order_preexisting and not customer_order_touched else 0
             next_state[CUSTOMER_ORDER_RECONCILE_STATE_KEY] = CUSTOMER_ORDER_RECONCILE_VERSION
             if customer_order_preexisting and not customer_order_touched:
                 callback(f"已整理客户订单：合并或更新 {changed:,} 条记录。")
         if any(group.role == "incremental" for group in scan_groups):
             next_state[BASELINE_REPLAY_STATE_KEY] = "0"
+        if initialize:
+            clear_file_progress()
         save_state(next_state)
-        clear_file_progress()
+        if not initialize:
+            clear_file_progress()
         callback("文件处理状态已保存；后续只处理新增或变更的 Excel 文件。")
 
     summary = SyncSummary(
@@ -2419,16 +2487,19 @@ def synchronize_database_directory(
         f"同步{'预演' if dry_run else '完成'}：{source_description}，文件={stats.files_scanned}，"
         f"工作表={stats.sheets_scanned}，源表={len(source_tables)}，原始记录={stats.raw_records}，"
         f"源记录写入/核验={written_raw}，工单={stats.work_order_records}，工单写入/核验={written_work_orders}，"
-        f"新增={added}，更新={updated}，未变={unchanged}，旧版记录复用={legacy_reused}，停用={deactivated}"
+        f"新增={added}，更新={updated}，未变={unchanged}，停用={deactivated}"
     )
     return summary
 
 
-def synchronize(config: Mapping[str, Any], dry_run: bool, callback: Optional[Callable[[str], None]] = None) -> SyncSummary:
+def synchronize(
+    config: Mapping[str, Any], dry_run: bool, callback: Optional[Callable[[str], None]] = None,
+    *, initialize: bool = False,
+) -> SyncSummary:
     callback = callback or (lambda message: None)
     sync_mode = str(config.get("sync_mode", "database")).strip().lower()
     if sync_mode == "database":
-        return synchronize_database_directory(config, dry_run, callback)
+        return synchronize_database_directory(config, dry_run, callback, initialize=initialize)
     if sync_mode != "api":
         raise SyncError("同步方式无效。请选择“数据库直连”或“QMS 接口”。")
     raise SyncError(
@@ -2507,7 +2578,10 @@ class SyncApplication(ttk.Frame):
         self.save_button = ttk.Button(controls, text="保存配置", command=self._save_configuration)
         self.test_button = ttk.Button(controls, text="测试数据库连接", command=self._test_connection)
         self.sync_button = ttk.Button(controls, text="开始同步", command=self._run_sync)
-        for button in (self.save_button, self.test_button, self.sync_button):
+        self.initialize_button = ttk.Button(
+            controls, text="清空并重新初始化", command=lambda: self._run_sync(initialize=True),
+        )
+        for button in (self.save_button, self.test_button, self.sync_button, self.initialize_button):
             button.pack(side="left", padx=(0, 8))
 
         self.progress = ttk.Progressbar(self, mode="indeterminate")
@@ -2582,7 +2656,7 @@ class SyncApplication(ttk.Frame):
             self.initialization_entry, self.initialization_button,
             self.incremental_entry, self.incremental_button, self.skip_initialization_button,
             self.auto_sync_button, self.auto_interval_input,
-            self.save_button, self.test_button, self.sync_button,
+            self.save_button, self.test_button, self.sync_button, self.initialize_button,
         ):
             button.configure(state=state)
         if value:
@@ -2650,7 +2724,9 @@ class SyncApplication(ttk.Frame):
         if self.directory_monitor is not None:
             self.directory_monitor.mark_synchronized(source_fingerprint)
 
-    def _run_sync(self, automatic: bool = False, source_fingerprint: Optional[str] = None) -> None:
+    def _run_sync(
+        self, automatic: bool = False, source_fingerprint: Optional[str] = None, initialize: bool = False,
+    ) -> None:
         if self.running:
             return
         try:
@@ -2660,6 +2736,8 @@ class SyncApplication(ttk.Frame):
                 raise SyncError("请选择初始化数据目录，或勾选“跳过初始化”。")
             if skip_initialization and not incremental:
                 raise SyncError("已勾选“跳过初始化”，请选择增量同步目录。")
+            if initialize and skip_initialization:
+                raise SyncError("请取消“跳过初始化”，再执行清空并重新初始化。")
             if source_fingerprint is None and incremental:
                 source_fingerprint = directory_fingerprint(Path(incremental))
             source_fingerprint = source_fingerprint or ""
@@ -2667,13 +2745,21 @@ class SyncApplication(ttk.Frame):
         except Exception as exc:
             self._write_log("自动同步无法启动：" + str(exc)) if automatic else messagebox.showerror(APP_NAME, str(exc))
             return
+        if initialize and not messagebox.askyesno(
+            "确认清空全部目标表",
+            "将删除所有租户在 ERP 源数据表、qms_work_order 和 qms_production_batch 中的数据，"
+            "再导入初始化及增量目录。该操作无法撤销，是否继续？",
+        ):
+            return
         self._set_running(True)
         self.status_var.set(("自动" if automatic else "手动") + "同步正在运行，请勿关闭窗口。")
         self._write_log("开始" + ("自动" if automatic else "手动") + "同步…")
 
         def worker() -> None:
             try:
-                result = synchronize(config, False, lambda text: self.events.put(("log", text)))
+                result = synchronize(
+                    config, False, lambda text: self.events.put(("log", text)), initialize=initialize,
+                )
                 self.events.put(("done", (result, automatic, source_fingerprint)))
             except Exception as exc:
                 self.events.put(("error", (str(exc), traceback.format_exc(), automatic)))
