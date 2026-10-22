@@ -1,0 +1,124 @@
+"""Full rebuild and cross-export identity for ERP source records."""
+
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+import qms_erp_sync as sync
+
+
+class SourceIdentityTests(unittest.TestCase):
+    def test_identical_rows_in_two_exports_share_a_key(self):
+        def record(file_name, row_no, value):
+            return next(iter(sync._source_record_pair(
+                file_name, "Sheet1", row_no, {"订单编号": value},
+                {"订单编号": value}, 0, False, sync.SourceScanStats(),
+                "qms_customer_order", (), lambda _: None,
+            )))[0]
+
+        first = record("baseline/客户订单资料.xls", 2, "A")
+        duplicate = record("daily/客户订单资料.xls", 25, "A")
+        different = record("daily/客户订单资料.xls", 26, "B")
+        self.assertEqual(first.source_key, duplicate.source_key)
+        self.assertNotEqual(first.source_key, different.source_key)
+
+
+class InitializationPlanTests(unittest.TestCase):
+    def test_old_location_key_state_requires_rebuild(self):
+        with patch.object(sync, "load_state", return_value={"raw:old-key": "old-hash"}):
+            with self.assertRaisesRegex(sync.SyncError, "清空并重新初始化"):
+                sync.synchronize_database_directory({}, False, lambda _: None)
+
+    def test_full_rebuild_reads_every_file_even_if_checkpoint_is_unchanged(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            baseline = root / "baseline"
+            baseline.mkdir()
+            source = baseline / "客户订单资料.xls"
+            source.write_bytes(b"export")
+            config = {"initialization_directory": str(baseline), "skip_initialization": False}
+            _, previous = sync.build_source_scan_plan(config, {})
+            groups, _ = sync.build_source_scan_plan(config, previous, force_all=True)
+            self.assertEqual([source], list(groups[0].files))
+
+    def test_clear_deletes_both_qms_tables_and_every_existing_source_table(self):
+        statements = []
+
+        class Cursor:
+            def execute(self, statement):
+                statements.append(statement)
+
+        client = object.__new__(sync.QmsDatabaseClient)
+        with patch.object(client, "_existing_source_tables", return_value={"qms_material", "qms_customer_order"}):
+            client._clear_target_tables(Cursor())
+        self.assertEqual([
+            "DELETE FROM `qms_production_batch`",
+            "DELETE FROM `qms_work_order`",
+            "DELETE FROM `qms_customer_order`",
+            "DELETE FROM `qms_material`",
+        ], statements)
+
+    def test_failed_rebuild_rolls_back_the_table_clear(self):
+        events = []
+
+        class Connection:
+            def cursor(self):
+                return self
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def commit(self):
+                events.append("commit")
+
+            def rollback(self):
+                events.append("rollback")
+
+            def close(self):
+                pass
+
+        class Client:
+            def __init__(self, _config):
+                pass
+
+            def _connect(self):
+                return Connection()
+
+            def _ensure_source_table_schema(self, *_args):
+                events.append("schema")
+
+            def _clear_target_tables(self, _cursor):
+                events.append("clear")
+
+            def _upsert_source_records(self, *_args, **_kwargs):
+                raise sync.SyncError("write failed")
+
+        def records(_config, _callback, stats, *, source_directory, selected_files):
+            stats.files_scanned += 1
+            stats.raw_records += 1
+            yield sync.RawSourceRecord(
+                source_file=selected_files[0].name, sheet_name="Sheet1", source_row_no=2,
+                business_key="A", source_key="key", row_hash="hash", field_values={},
+                source_table="qms_material", field_definitions={},
+            ), None
+
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "baseline"
+            source.mkdir()
+            (source / "原料资料明细.xls").write_bytes(b"export")
+            config = {"initialization_directory": str(source), "skip_initialization": False}
+            with patch.object(sync, "QmsDatabaseClient", Client), \
+                    patch.object(sync, "iter_all_source_records", side_effect=records), \
+                    patch.object(sync, "save_state") as save_state:
+                with self.assertRaisesRegex(sync.SyncError, "write failed"):
+                    sync.synchronize_database_directory(config, False, lambda _: None, initialize=True)
+            self.assertEqual(["schema", "commit", "clear", "rollback"], events)
+            save_state.assert_not_called()
+
+
+if __name__ == "__main__":
+    unittest.main()
