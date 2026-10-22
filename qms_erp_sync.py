@@ -1853,10 +1853,34 @@ class QmsDatabaseClient:
 
     def _clear_target_tables(self, cursor) -> None:
         """Delete every tenant's rows inside the full-rebuild transaction."""
+        self._assert_safe_clear(cursor)
         cursor.execute("DELETE FROM `qms_production_batch`")
         cursor.execute("DELETE FROM `qms_work_order`")
         for table_name in sorted(self._existing_source_tables(cursor)):
             cursor.execute(f"DELETE FROM {self._table_name(table_name)}")
+
+    def _assert_safe_clear(self, cursor) -> None:
+        targets = BUSINESS_SOURCE_TABLES | {"qms_work_order", "qms_production_batch"}
+        names = sorted(targets)
+        placeholders = ", ".join(["%s"] * len(names))
+        cursor.execute(
+            f"SELECT table_name, engine FROM information_schema.tables "
+            f"WHERE table_schema = DATABASE() AND table_name IN ({placeholders})",
+            tuple(names),
+        )
+        unsafe = [name for name, engine in cursor.fetchall() if str(engine).upper() != "INNODB"]
+        if unsafe:
+            raise SyncError("目标表不是 InnoDB，无法保证初始化失败后回滚：" + ", ".join(unsafe))
+        cursor.execute(
+            f"SELECT DISTINCT CONCAT(table_schema, '.', table_name) FROM information_schema.key_column_usage "
+            f"WHERE referenced_table_schema = DATABASE() "
+            f"AND referenced_table_name IN ({placeholders}) "
+            f"AND NOT (table_schema = DATABASE() AND table_name IN ({placeholders}))",
+            tuple(names) * 2,
+        )
+        dependents = [name for (name,) in cursor.fetchall()]
+        if dependents:
+            raise SyncError("有范围外的表引用目标表，初始化可能级联删除：" + ", ".join(dependents))
 
     def _reconcile_customer_order_latest(self, cursor) -> int:
         """Overwrite the original row with the latest row for each order and material."""

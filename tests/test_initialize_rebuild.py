@@ -52,6 +52,29 @@ class SourceIdentityTests(unittest.TestCase):
 
 
 class InitializationTests(unittest.TestCase):
+    def test_clear_rejects_nontransactional_tables_and_external_dependents(self):
+        class Cursor:
+            def __init__(self, answers):
+                self.answers = iter(answers)
+                self.statements = []
+
+            def execute(self, statement, *_args):
+                self.statements.append(statement)
+
+            def fetchall(self):
+                return next(self.answers)
+
+        client = object.__new__(sync.QmsDatabaseClient)
+        nontransactional = Cursor([[("qms_material", "MyISAM")]])
+        with self.assertRaisesRegex(sync.SyncError, "InnoDB"):
+            client._clear_target_tables(nontransactional)
+        self.assertFalse(any("DELETE FROM" in sql for sql in nontransactional.statements))
+
+        external_reference = Cursor([[("qms_material", "InnoDB")], [("other_table",)]])
+        with self.assertRaisesRegex(sync.SyncError, "范围外"):
+            client._clear_target_tables(external_reference)
+        self.assertFalse(any("DELETE FROM" in sql for sql in external_reference.statements))
+
     def test_missing_local_state_requires_rebuild(self):
         with patch.object(sync, "load_state", return_value={}):
             with self.assertRaisesRegex(sync.SyncError, "清空并重新初始化"):
@@ -75,7 +98,8 @@ class InitializationTests(unittest.TestCase):
                 statements.append(statement)
 
         client = object.__new__(sync.QmsDatabaseClient)
-        with patch.object(client, "_existing_source_tables", return_value={"qms_material"}):
+        with patch.object(client, "_existing_source_tables", return_value={"qms_material"}), \
+                patch.object(client, "_assert_safe_clear"):
             client._clear_target_tables(Cursor())
         self.assertEqual([
             "DELETE FROM `qms_production_batch`",
