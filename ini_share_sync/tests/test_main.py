@@ -184,28 +184,38 @@ class MainTests(unittest.TestCase):
     def test_task_scripts_support_safe_whatif_execution(self):
         """A script encoding or parse error would make task installation/removal unusable."""
         project_root = Path(__file__).resolve().parents[1]
-        for script_name in (
-            "install_sync_task.ps1",
-            "remove_sync_task.ps1",
-        ):
-            script_path = project_root / script_name
-            result = subprocess.run(
-                [
-                    "powershell",
-                    "-NoProfile",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-File",
-                    str(script_path),
-                    "-WhatIf",
-                ],
-                capture_output=True,
-            )
-            self.assertEqual(
-                0,
-                result.returncode,
-                result.stderr.decode("utf-8", errors="replace"),
-            )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            schtasks_path = root / "fake-schtasks.cmd"
+            marker = root / "scheduler-called.txt"
+            schtasks_path.write_text('@echo called> "%CAPTURE_ARGS%"\r\n', encoding="ascii")
+            environment = os.environ.copy()
+            environment["CAPTURE_ARGS"] = str(marker)
+            executable = project_root / "dist" / "IniShareSync.exe"
+            created_executable = not executable.exists()
+            if created_executable:
+                executable.parent.mkdir(parents=True, exist_ok=True)
+                executable.write_bytes(b"test placeholder")
+            try:
+                for script_name in ("install_sync_task.ps1", "remove_sync_task.ps1"):
+                    script_path = project_root / script_name
+                    result = subprocess.run(
+                        [
+                            "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                            "-File", str(script_path), "-SchtasksPath", str(schtasks_path),
+                            "-WhatIf",
+                        ],
+                        capture_output=True,
+                        env=environment,
+                    )
+                    self.assertEqual(
+                        0, result.returncode,
+                        result.stderr.decode("utf-8", errors="replace"),
+                    )
+                    self.assertFalse(marker.exists(), script_name)
+            finally:
+                if created_executable:
+                    executable.unlink()
 
     def test_task_scripts_create_and_remove_compatible_schtasks_jobs(self):
         """Windows 7 and XP need different schtasks command formats."""
@@ -215,16 +225,19 @@ class MainTests(unittest.TestCase):
             schtasks_path = temporary_root / "fake-schtasks.cmd"
             captured_args = temporary_root / "schtasks-args.txt"
             captured_xml = temporary_root / "task.xml"
+            captured_status_xml = temporary_root / "status-task.xml"
             schtasks_path.write_text(
                 "@echo off\r\n"
                 "echo %*>> \"%CAPTURE_ARGS%\"\r\n"
-                "if /I \"%~1\"==\"/Create\" copy /Y \"%~5\" \"%CAPTURE_XML%\" >nul\r\n"
+                "if /I \"%~1\"==\"/Create\" if /I \"%~3\"==\"IniShareSync\" copy /Y \"%~5\" \"%CAPTURE_XML%\" >nul\r\n"
+                "if /I \"%~1\"==\"/Create\" if /I \"%~3\"==\"IniShareSyncStatus\" copy /Y \"%~5\" \"%CAPTURE_STATUS_XML%\" >nul\r\n"
                 "exit /b 0\r\n",
                 encoding="ascii",
             )
             environment = os.environ.copy()
             environment["CAPTURE_ARGS"] = str(captured_args)
             environment["CAPTURE_XML"] = str(captured_xml)
+            environment["CAPTURE_STATUS_XML"] = str(captured_status_xml)
 
             install_result = subprocess.run(
                 [
@@ -256,6 +269,9 @@ class MainTests(unittest.TestCase):
                 "<WorkingDirectory>{}</WorkingDirectory>".format(project_root / "dist"),
                 task_xml,
             )
+            status_task_xml = captured_status_xml.read_text(encoding="utf-8-sig")
+            self.assertIn("<Interval>PT1M</Interval>", status_task_xml)
+            self.assertIn("<Arguments>--status-only</Arguments>", status_task_xml)
 
             win32_bundle = project_root / "dist-win32" / "IniShareSync"
             win32_executable = win32_bundle / "IniShareSync.exe"
@@ -329,6 +345,7 @@ class MainTests(unittest.TestCase):
             )
             scheduler_commands = captured_args.read_text(encoding="utf-8")
             self.assertIn("/Create /SC MINUTE /MO 5 /TN IniShareSync /TR", scheduler_commands)
+            self.assertIn("/Create /SC MINUTE /MO 1 /TN IniShareSyncStatus /TR", scheduler_commands)
             self.assertIn(
                 "/Create /SC ONSTART /TN IniShareSyncStartup /TR",
                 scheduler_commands,
@@ -364,6 +381,8 @@ class MainTests(unittest.TestCase):
             self.assertIn("/Delete /TN IniShareSync /F", scheduler_commands)
             self.assertIn("/Query /TN IniShareSyncStartup", scheduler_commands)
             self.assertIn("/Delete /TN IniShareSyncStartup /F", scheduler_commands)
+            self.assertIn("/Query /TN IniShareSyncStatus", scheduler_commands)
+            self.assertIn("/Delete /TN IniShareSyncStatus /F", scheduler_commands)
 
     def test_build_places_runtime_configuration_next_to_packaged_exe(self):
         """If the config is absent from dist, the scheduled EXE cannot find its settings."""

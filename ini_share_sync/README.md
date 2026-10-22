@@ -22,7 +22,7 @@
 }
 ```
 
-将 `device_id` 改为本机实际设备编号。它会成为共享目录下的子文件夹名，不能包含 `\\`、`/` 或 `:`。`target_root` 必须保持 UNC 共享路径，不要改为映射盘符。
+将 `device_id` 改为本机实际设备编号。每台飞针机必须使用不同编号；忽略首尾空格和英文大小写后仍须唯一，并在 QMS 设备网关映射中绑定到对应设备。编号会成为共享目录下的子文件夹名，不能使用 Windows 保留名称（如 `CON`、`AUX`）、尾部句点或文件名禁用字符。`target_root` 必须保持 UNC 共享路径，不要改为映射盘符。
 
 运行计划任务的 Windows 账户必须有权限创建并写入 `\\Scbgx\数字化\飞针机\<设备编号>`。可先在资源管理器用同一账户打开该共享目录并创建一个测试文件，确认网络和权限都正常。
 
@@ -37,6 +37,8 @@ python -m ini_share_sync.main
 
 每次执行结束后会退出。也可使用 `python .\run_ini_share_sync.py` 运行同一命令。日志保存在 `logs\sync-YYYY-MM-DD.log`；每个成功同步的文件会在 `sync_state.json` 中记录 SHA-256 指纹和成功时间。共享目录临时不可用或写入失败时，该文件不会被标记为成功，下一次运行会自动重试。
 
+仅采集本机电脑状态可运行 `python -m ini_share_sync.main --status-only`，打包后运行 `IniShareSync.exe --status-only`。它不读取 `D:\WTD\JOBS`，而是每次更新共享目录中的 `<设备编号>\host-status.json`；文件只包含本机 CPU、内存、系统盘、开机时长及采样时间，不含 QMS 凭据。状态日志写在 `logs\host-status-YYYY-MM-DD.log`。SCBGX 监听程序会读取该文件并转发到 QMS。
+
 ## 3. 打包与安装每 5 分钟任务
 
 先完成配置，然后打包：
@@ -46,7 +48,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\build_exe.ps1
 ```
 
-成功后会生成 `dist\IniShareSync.exe`，并把当前的 `sync_config.json` 复制到同一目录。计划任务和 EXE 都读取这份 `dist\sync_config.json`；修改配置后请再次运行 `build_exe.ps1`。接着创建或更新名称为 `IniShareSync` 的计划任务：
+成功后会生成 `dist\IniShareSync.exe`，并把当前的 `sync_config.json` 复制到同一目录。计划任务和 EXE 都读取这份 `dist\sync_config.json`；修改配置后请再次运行 `build_exe.ps1`。接着创建或更新文件同步及状态采集计划任务：
 
 ```powershell
 .\install_sync_task.ps1
@@ -68,7 +70,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 部署到 Windows 7 时，完整复制 `dist-win32` 文件夹（不要只复制 EXE），以及 `install_sync_task.ps1`、`remove_sync_task.ps1` 和本说明即可。新电脑不需要安装 Python。
 
-安装和卸载脚本使用 Windows 自带的 `schtasks.exe`，兼容 Windows 7。该任务以当前登录的 Windows 账户运行，每 5 分钟执行一次，且当上一轮尚未结束时忽略新的启动请求。任务设置为“用户登录时运行”；请保持该账户已登录，才能让计划任务按时执行。
+安装和卸载脚本使用 Windows 自带的 `schtasks.exe`，兼容 Windows 7。`IniShareSync` 每 5 分钟同步文件；独立的 `IniShareSyncStatus` 每 1 分钟采集状态，上一轮尚未结束时忽略新的状态运行请求。任务设置为“用户登录时运行”；请保持该账户已登录，才能让计划任务按时执行。
 
 ## Windows XP 32 位版本
 
@@ -86,13 +88,14 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\install_sync_task.ps1 -PackageDirectory dist-xp32
 ```
 
-XP 自带的是旧版计划任务，安装脚本会创建两个任务：`IniShareSync` 每 5 分钟执行一次，`IniShareSyncStartup` 在电脑启动时立即执行一次。它会以执行安装命令的当前 Windows 账户运行。因此该账户需保持登录，且必须对共享目录有写入权限。若刚开机时网络共享尚未可用，会记录失败，之后的 5 分钟任务会自动补传。
+XP 自带的是旧版计划任务，安装脚本会创建三个任务：`IniShareSync` 每 5 分钟同步文件，`IniShareSyncStartup` 在电脑启动时同步一次，`IniShareSyncStatus` 每 1 分钟采集状态。它们以执行安装命令的当前 Windows 账户运行。因此该账户需保持登录，且必须对共享目录有写入权限。若刚开机时网络共享尚未可用，会记录失败，下一次计划任务会重试。XP 的开机时长计数约每 49.7 天回绕一次，此时 QMS 显示的开机时长会重新从零计起。
 
 若 XP 没有安装 PowerShell，可在管理员 CMD 中进入部署目录后直接创建任务（将示例路径替换为实际路径）：
 
 ```bat
 schtasks /Create /SC MINUTE /MO 5 /TN IniShareSync /TR D:\ini_share_sync\dist-xp32\IniShareSync\IniShareSync.exe /F
 schtasks /Create /SC ONSTART /TN IniShareSyncStartup /TR D:\ini_share_sync\dist-xp32\IniShareSync\IniShareSync.exe /F
+schtasks /Create /SC MINUTE /MO 1 /TN IniShareSyncStatus /TR "D:\ini_share_sync\dist-xp32\IniShareSync\IniShareSync.exe --status-only" /F
 ```
 
 需要删除该任务时运行：
@@ -100,6 +103,7 @@ schtasks /Create /SC ONSTART /TN IniShareSyncStartup /TR D:\ini_share_sync\dist-
 ```bat
 schtasks /Delete /TN IniShareSync /F
 schtasks /Delete /TN IniShareSyncStartup /F
+schtasks /Delete /TN IniShareSyncStatus /F
 ```
 
 安装前可进行无修改演练：
@@ -110,13 +114,13 @@ schtasks /Delete /TN IniShareSyncStartup /F
 
 ## 4. 一键删除计划任务
 
-执行以下命令即可删除本工具创建的 `IniShareSync` 任务：
+执行以下命令即可删除本工具创建的计划任务：
 
 ```powershell
 .\remove_sync_task.ps1
 ```
 
-它会移除每 5 分钟任务和开机同步任务，不会删除配置、日志、状态文件、源 INI 或共享目录中的 TXT 文件。删除前同样可以使用 `-WhatIf` 预览：
+它会移除每 5 分钟文件同步、开机同步和每 1 分钟状态采集任务；不会删除配置、日志、状态文件、源 INI、共享目录中的 TXT 或 `host-status.json`。要回退设备端程序，先卸载任务，再恢复备份的 EXE 包和配置，最后用旧版脚本重装原任务。删除前同样可以使用 `-WhatIf` 预览：
 
 ```powershell
 .\remove_sync_task.ps1 -WhatIf
