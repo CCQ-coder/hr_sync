@@ -88,7 +88,7 @@ class DirectoryFingerprintTests(unittest.TestCase):
                 "skip_initialization": False,
             }
             _, checkpoints = sync.build_source_scan_plan(config, {})
-            checkpoints[sync.SOURCE_IDENTITY_VERSION_STATE_KEY] = "2"
+            checkpoints[sync.SOURCE_IDENTITY_VERSION_STATE_KEY] = "4"
             checkpoints[sync.CUSTOMER_ORDER_RECONCILE_STATE_KEY] = sync.CUSTOMER_ORDER_RECONCILE_VERSION
             with patch.object(sync, "load_state", return_value=checkpoints), \
                     patch.object(sync, "QmsDatabaseClient", side_effect=AssertionError("database should not open")):

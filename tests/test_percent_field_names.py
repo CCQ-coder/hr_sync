@@ -19,6 +19,8 @@ class CapturingCursor:
         self.executemany_calls.append((statement, list(rows)))
 
     def fetchone(self):
+        if self.executed and self.executed[-1][0].lstrip().startswith("SELECT 1 FROM"):
+            return None
         return ("work-order-id",)
 
     def fetchall(self):

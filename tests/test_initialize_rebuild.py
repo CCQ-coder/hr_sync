@@ -8,7 +8,55 @@ from unittest.mock import patch
 import qms_erp_sync as sync
 
 
+class SourceIdentityTests(unittest.TestCase):
+    def test_existing_legacy_database_keys_require_rebuild(self):
+        class Cursor:
+            def execute(self, *_args):
+                pass
+
+            def fetchone(self):
+                return (1,)
+
+        client = sync.QmsDatabaseClient({
+            "database_host": "localhost", "database_port": "3306",
+            "database_name": "qms", "database_username": "qms", "tenant_code": "t",
+        })
+        record = sync.RawSourceRecord(
+            "a.xls", "Sheet1", 2, "A", "ERP4:new", "hash", {},
+            "qms_material", {},
+        )
+        with patch.object(client, "_ensure_source_table_schema"):
+            with self.assertRaisesRegex(sync.SyncError, "旧版来源键"):
+                client._upsert_source_records(Cursor(), "qms_material", [record])
+
+    def test_business_number_updates_across_header_aliases_and_keeps_detail_lines(self):
+        def record(file_name, headers, values):
+            definitions = tuple(sync.ErpFieldDefinition(
+                "qms_material_receipt", file_name, "Sheet1", header, header, column,
+                column, header, index,
+            ) for index, (header, column) in enumerate(zip(
+                headers, ("erp_receipt_no", "erp_material_no", "erp_quantity"),
+            ), 1))
+            raw_data = dict(zip(headers, values))
+            return next(iter(sync._source_record_pair(
+                file_name, "Sheet1", 2, raw_data, raw_data, 0, False,
+                sync.SourceScanStats(), "qms_material_receipt", definitions, file_name,
+            )))[0]
+
+        first = record("baseline.xls", ("入库单号", "原料编号", "数量"), ("R1", "M1", 5))
+        changed = record("daily.xls", ("ylr_bh", "yuanl_bh", "shul_mq"), ("R1", "M1", 9))
+        other_line = record("daily.xls", ("ylr_bh", "yuanl_bh", "shul_mq"), ("R1", "M2", 9))
+        self.assertEqual(first.source_key, changed.source_key)
+        self.assertNotEqual(first.row_hash, changed.row_hash)
+        self.assertNotEqual(first.source_key, other_line.source_key)
+
+
 class InitializationTests(unittest.TestCase):
+    def test_missing_local_state_requires_rebuild(self):
+        with patch.object(sync, "load_state", return_value={}):
+            with self.assertRaisesRegex(sync.SyncError, "清空并重新初始化"):
+                sync.synchronize_database_directory({}, False, lambda _: None)
+
     def test_rebuild_reads_unchanged_baseline_files(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

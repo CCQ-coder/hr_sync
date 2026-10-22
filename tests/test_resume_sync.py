@@ -404,7 +404,7 @@ class ResumeTests(unittest.TestCase):
             (source / "客户订单资料.xls").write_bytes(b"already-imported")
             config = {"initialization_directory": str(source), "incremental_directory": "", "skip_initialization": False}
             _, state = sync.build_source_scan_plan(config, {})
-            state[sync.SOURCE_IDENTITY_VERSION_STATE_KEY] = "3"
+            state[sync.SOURCE_IDENTITY_VERSION_STATE_KEY] = "4"
             state[sync.CUSTOMER_ORDER_RECONCILE_STATE_KEY] = "1"
             client = Client()
             with patch.object(sync, "state_path", return_value=root / "state.json"), \
@@ -479,6 +479,7 @@ class ResumeTests(unittest.TestCase):
             with patch.object(sync, "state_path", return_value=root / "state.json"), \
                     patch.object(sync, "iter_all_source_records", side_effect=fake_records), \
                     patch.object(sync, "QmsDatabaseClient", return_value=client):
+                sync.save_state({sync.SOURCE_IDENTITY_VERSION_STATE_KEY: "4"})
                 sync.synchronize_database_directory(config, False, messages.append)
                 self.assertEqual(["new-key"], client.written_keys)
                 self.assertEqual(1, client.reconciled)
@@ -541,9 +542,10 @@ class ResumeTests(unittest.TestCase):
             with patch.object(sync, "state_path", return_value=root / "state.json"), \
                     patch.object(sync, "iter_all_source_records", side_effect=fake_records), \
                     patch.object(sync, "QmsDatabaseClient", return_value=FakeClient(connection)):
+                sync.save_state({sync.SOURCE_IDENTITY_VERSION_STATE_KEY: "4"})
                 with self.assertRaisesRegex(sync.SyncError, "覆盖"):
                     sync.synchronize_database_directory(config, False, lambda _: None)
-                self.assertEqual({}, sync.load_state())
+                self.assertEqual({sync.SOURCE_IDENTITY_VERSION_STATE_KEY: "4"}, sync.load_state())
             self.assertEqual(1, connection.rollbacks)
 
     def test_overwrite_deactivates_rows_removed_from_the_same_file(self) -> None:
@@ -609,6 +611,7 @@ class ResumeTests(unittest.TestCase):
             with patch.object(sync, "state_path", return_value=root / "state.json"), \
                     patch.object(sync, "iter_all_source_records", side_effect=fake_records), \
                     patch.object(sync, "QmsDatabaseClient", return_value=client):
+                sync.save_state({sync.SOURCE_IDENTITY_VERSION_STATE_KEY: "4"})
                 sync.synchronize_database_directory(config, False, lambda _: None)
                 workbook.write_bytes(b"later")
                 result = sync.synchronize_database_directory(config, False, lambda _: None)
@@ -686,6 +689,7 @@ class ResumeTests(unittest.TestCase):
             with patch.object(sync, "state_path", return_value=root / "state.json"), \
                     patch.object(sync, "iter_all_source_records", side_effect=fake_records), \
                     patch.object(sync, "QmsDatabaseClient", return_value=first_client):
+                sync.save_state({sync.SOURCE_IDENTITY_VERSION_STATE_KEY: "4"})
                 with self.assertRaises(sync.SyncError):
                     sync.synchronize_database_directory(config, False, lambda _: None)
                 first_state = sync.load_state()
