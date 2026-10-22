@@ -44,9 +44,16 @@ def load_config(config_path: Path) -> SyncConfig:
         raise ConfigError("target_root 必须是 UNC 共享目录，例如 \\服务器\\共享目录")
     if (
         not device_id
+        or len(device_id) > 160
         or device_id == DEVICE_ID_PLACEHOLDER
         or device_id in (".", "..")
-        or any(character in device_id for character in "\\/:\x00")
+        or device_id.endswith(".")
+        or device_id.split(".", 1)[0].upper() in (
+            "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5",
+            "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4",
+            "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+        )
+        or any(ord(character) < 32 or character in '\\/:*?"<>|' for character in device_id)
     ):
         raise ConfigError("device_id 必须是安全的单层目录名")
 
