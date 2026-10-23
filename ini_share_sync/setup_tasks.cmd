@@ -20,26 +20,24 @@ if not "%APP%"=="%APP: =%" (
     exit /b 2
 )
 
-start "" /wait "%APP%" --status-only >nul 2>&1
-if errorlevel 1 (
-    echo Status preflight failed. Check sync_config.json and the SCBGX share.
-    exit /b 2
-)
-
 rem Keep the old task's account and trigger; XP cannot use schtasks /Create /F.
-schtasks /Change /TN IniShareSync /TR "%APP%" >nul 2>&1
-if errorlevel 1 (
+echo Setting up IniShareSync...
+if exist "%WINDIR%\Tasks\IniShareSync.job" (
+    schtasks /Change /TN IniShareSync /TR "%APP%"
+) else (
     schtasks /Create /SC MINUTE /MO 5 /TN IniShareSync /TR "%APP%"
-    if errorlevel 1 goto failed
 )
-schtasks /Change /TN IniShareSyncStatus /TR "%APP% --status-only" >nul 2>&1
-if errorlevel 1 (
+if errorlevel 1 goto failed
+echo Setting up IniShareSyncStatus...
+if exist "%WINDIR%\Tasks\IniShareSyncStatus.job" (
+    schtasks /Change /TN IniShareSyncStatus /TR "%APP% --status-only"
+) else (
     schtasks /Create /SC MINUTE /MO 1 /TN IniShareSyncStatus /TR "%APP% --status-only"
-    if errorlevel 1 goto failed
 )
-schtasks /Query /TN IniShareSyncStartup >nul 2>&1
-if not errorlevel 1 (
-    schtasks /Change /TN IniShareSyncStartup /TR "%APP%" >nul 2>&1
+if errorlevel 1 goto failed
+if exist "%WINDIR%\Tasks\IniShareSyncStartup.job" (
+    echo Updating IniShareSyncStartup...
+    schtasks /Change /TN IniShareSyncStartup /TR "%APP%"
     if errorlevel 1 goto failed
 )
 

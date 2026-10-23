@@ -10,12 +10,13 @@ IniShareSync.exe；它已经是无黑窗程序。setup_tasks.cmd 只在安装或
 2. 结束正在运行的旧程序，再将本包中的文件复制到原安装目录，覆盖同名程序文件。
    本包没有 sync_config.json 和 sync_state.json；请保留设备原有的这两个文件。
    不要从其他飞针机复制配置，否则设备编号会混淆。
-3. 在该安装目录打开 CMD，运行 setup_tasks.cmd。它会先测试状态上报，
-   保留已有任务的周期和账户，将旧开机任务也改为直接运行无窗口 EXE，
+3. 在该安装目录打开 CMD，运行 setup_tasks.cmd。它会保留已有任务的
+   周期和账户，将旧开机任务也改为直接运行无窗口 EXE，
    并新增缺少的任务。若系统提示输入账户密码，
    请使用有权写入 \\SCBGX\数字化\飞针机 的账户。运行结束后重新启用旧任务；
    若脚本失败，旧任务仍在，先恢复旧任务，再检查配置、共享权限和日志。
-4. 等待约 2 分钟，检查 logs\host-status-当天日期.log 和共享目录中的
+4. 用 dir %WINDIR%\Tasks\IniShareSyncStatus.job 确认状态任务已创建。
+   等待约 2 分钟，检查 logs\host-status-当天日期.log 和共享目录中的
    \\SCBGX\数字化\飞针机\<device_id>\host-status.json。
 
 首次安装
@@ -29,4 +30,5 @@ IniShareSync.exe；它已经是无黑窗程序。setup_tasks.cmd 只在安装或
 每 1 分钟写本机状态。旧设备原有的开机任务会保留，动作会更新为无窗口 EXE。
 新建任务使用执行 setup_tasks.cmd 的账户。定时动作直接运行无黑窗
 EXE，不运行 CMD。出错请看本目录 logs；setup_tasks.cmd 失败不会删除旧任务。
+安装脚本不等待共享目录写入；状态上报结果以第 4 步为准。
 SCBGX 上的 E:\软件\飞针机-设备端 是发布包存放处，不是设备上的安装目录。

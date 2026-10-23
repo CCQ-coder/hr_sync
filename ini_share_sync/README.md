@@ -82,7 +82,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\build_exe_xp32.ps1
 ```
 
-该脚本使用项目内的 32 位 Python 3.4 和 PyInstaller 3.4，生成唯一的 XP 更新包 `dist-xp32\IniShareSync\`。其中包含无黑窗 `IniShareSync.exe`、完整运行库、`sync_config.example.json`、`setup_tasks.cmd` 和 `更新说明.txt`，不包含任何设备的真实配置或同步记录。只需把这个文件夹的内容复制到飞针机原安装目录；首次安装先把配置示例复制为 `sync_config.json` 并填写唯一 `device_id`。随后在该目录的 CMD 中运行一次 `setup_tasks.cmd`。脚本保留已有任务的周期和账户，修正旧开机任务的动作，并新增缺少的任务；即使失败也不删除旧任务。周期任务直接调用无黑窗 EXE，不调用 CMD；具体更新和验证步骤见包内 `更新说明.txt`。XP 的开机时长计数约每 49.7 天回绕一次，此时 QMS 显示的开机时长会重新从零计起。
+该脚本使用项目内的 32 位 Python 3.4 和 PyInstaller 3.4，生成唯一的 XP 更新包 `dist-xp32\IniShareSync\`。其中包含无黑窗 `IniShareSync.exe`、完整运行库、`sync_config.example.json`、`setup_tasks.cmd` 和 `更新说明.txt`，不包含任何设备的真实配置或同步记录。只需把这个文件夹的内容复制到飞针机原安装目录；首次安装先把配置示例复制为 `sync_config.json` 并填写唯一 `device_id`。随后在该目录的 CMD 中运行一次 `setup_tasks.cmd`。脚本保留已有任务的周期和账户，修正旧开机任务的动作，并新增缺少的任务；即使失败也不删除旧任务。安装脚本不等待共享目录写入，状态上报须按包内 `更新说明.txt` 检查。周期任务直接调用无黑窗 EXE，不调用 CMD；具体更新和验证步骤见包内 `更新说明.txt`。XP 的开机时长计数约每 49.7 天回绕一次，此时 QMS 显示的开机时长会重新从零计起。
 
 ## 4. 卸载 PowerShell 版计划任务
 
