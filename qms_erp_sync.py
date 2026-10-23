@@ -41,8 +41,6 @@ CONFIG_FILE_NAME = "qms_erp_sync_config.json"
 STATE_FILE_NAME = "qms_erp_sync_state.json"
 BASELINE_REPLAY_STATE_KEY = "baseline-replay-pending"
 SOURCE_IDENTITY_VERSION_STATE_KEY = "source-identity-version"
-CUSTOMER_ORDER_RECONCILE_STATE_KEY = "customer-order-latest-version"
-CUSTOMER_ORDER_RECONCILE_VERSION = "2"
 LOG_DIR_NAME = "logs"
 SOURCE_KEY_PREFIX = "ERP-EXCEL:"
 API_PATH = "/api/v1/integrations/work-orders"
@@ -85,8 +83,8 @@ ERP_ROW_IDENTITIES: Mapping[str, Tuple[Tuple[str, ...], ...]] = {
     "qms_material": (("erp_material_no",),),
     "qms_material_receipt": (("erp_receipt_no", "erp_receipt_detail_no"), ("erp_receipt_detail_no",), ("erp_receipt_no", "erp_material_no"), ("erp_receipt_no",)),
     "qms_material_issue": (("erp_material_issue_detail_id",), ("erp_material_issue_id", "erp_material_no_id"), ("erp_material_issue_no", "erp_material_no_source_3b3dc2fa70"), ("erp_material_issue_no", "erp_material_no_source_3d14d54480"), ("erp_material_issue_no",)),
-    "qms_finished_goods_receipt": (("erp_combined_panel_detail_id",), ("erp_receipt_no", "erp_carton_no", "erp_internal_product_no"), ("erp_receipt_no", "erp_internal_product_no"), ("erp_receipt_no",)),
-    "qms_delivery_note": (("erp_delivery_note_no", "erp_internal_product_no"), ("erp_delivery_note_no",)),
+    "qms_finished_goods_receipt": (("erp_receipt_id_m",), ("erp_combined_panel_detail_id",), ("erp_receipt_no", "erp_carton_no", "erp_internal_product_no"), ("erp_receipt_no", "erp_internal_product_no"), ("erp_receipt_no",)),
+    "qms_delivery_note": (("erp_delivery_note_no", "erp_internal_product_no", "erp_order_no", "erp_production_order_no"), ("erp_delivery_note_no", "erp_internal_product_no", "erp_order_no"), ("erp_delivery_note_no", "erp_internal_product_no", "erp_production_order_no"), ("erp_delivery_note_no", "erp_internal_product_no"), ("erp_delivery_note_no",)),
     "qms_work_order": (("erp_production_order_no",),),
 }
 
@@ -750,16 +748,17 @@ def build_source_scan_plan(
     if incremental:
         root = Path(incremental).expanduser()
         all_files = candidate_files(root)
-        changed = []
-        for path in all_files:
+        replay_from = 0 if (force_all or initialization_changed
+                            or previous.get(BASELINE_REPLAY_STATE_KEY) == "1") else None
+        for index, path in enumerate(all_files):
             key = source_file_state_key("incremental", root, path)
             value = source_file_checkpoint(path)
             checkpoints[key] = value
-            if force_all or initialization_changed or previous.get(BASELINE_REPLAY_STATE_KEY) == "1" \
-                    or previous.get(key) != value:
-                changed.append(path)
-        if changed:
-            groups.append(SourceScanGroup("incremental", root, tuple(changed)))
+            if replay_from is None and previous.get(key) != value:
+                replay_from = index
+        if replay_from is not None and all_files:
+            # Later exports must overwrite shared business records after an older file changes.
+            groups.append(SourceScanGroup("incremental", root, tuple(all_files[replay_from:])))
     elif skip_initialization:
         raise SyncError("已勾选“跳过初始化”，请选择增量同步目录。")
 
@@ -1313,6 +1312,7 @@ def iter_all_source_records(
             raise SyncError(f"源文件完整路径超过数据库字段长度：{relative_file}")
         stats.files_scanned += 1
         callback(f"遍历文件 {file_index:,}/{len(files):,}：{relative_file}")
+        source_row_ordinals: Dict[str, int] = {}
         map_work_orders = not keyword or keyword in path.name.casefold()
         lower_name = path.name.lower()
 
@@ -1360,7 +1360,7 @@ def iter_all_source_records(
                             continue
                         yield from _source_record_pair(
                             relative_file, sheet.title, row_index, row, raw_data, 0, is_work_order,
-                            stats, target_table, definitions, source_location,
+                            stats, target_table, definitions, source_location, source_row_ordinals,
                         )
             finally:
                 workbook.close()
@@ -1423,7 +1423,7 @@ def iter_all_source_records(
                     yield from _source_record_pair(
                         relative_file, sheet_name, zero_based_row + 1, row, raw_data,
                         workbook.datemode, is_work_order, stats, target_table, definitions,
-                        source_location,
+                        source_location, source_row_ordinals,
                     )
             if decode_warnings[0]:
                 callback(
@@ -1446,6 +1446,7 @@ def _source_record_pair(
     source_table: Optional[str],
     definitions: Sequence[ErpFieldDefinition],
     source_location: str,
+    source_row_ordinals: Optional[Dict[str, int]] = None,
 ) -> Iterable[Tuple[RawSourceRecord, Optional[Dict[str, Any]]]]:
     """Build a source record and, where applicable, its work-order view."""
     field_values = {
@@ -1455,12 +1456,18 @@ def _source_record_pair(
     row_document = json.dumps(field_values or raw_data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     table_name = source_table or "qms_work_order"
     identity = f"{table_name}\x1f{erp_row_identity(table_name, field_values or raw_data)}"
+    if table_name in ("qms_customer_order", "qms_delivery_note"):
+        ordinals = source_row_ordinals if source_row_ordinals is not None else {}
+        ordinal = ordinals.get(identity, 0) + 1
+        ordinals[identity] = ordinal
+        # shortcut: export order identifies otherwise indistinguishable details; reordered exports need an ERP detail ID.
+        identity = f"{identity}\x1f{ordinal}"
     raw = RawSourceRecord(
         source_file=source_location,
         sheet_name=sheet_name,
         source_row_no=row_no,
         business_key=raw_business_key(row, row_no),
-        source_key="ERP4:" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:59],
+        source_key="ERP5:" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:59],
         row_hash=hashlib.sha256(row_document.encode("utf-8")).hexdigest(),
         # Definitions and raw_data are both built in worksheet column order.
         # Pair by position so the reviewed field mapping still works when an
@@ -1769,7 +1776,7 @@ class QmsDatabaseClient:
             self._ensure_source_table_schema(cursor, table_name, fields)
         table = self._table_name(table_name)
         if ensure_schema and table_name not in self._identity_checked:
-            cursor.execute(f"SELECT 1 FROM {table} WHERE `source_key` NOT LIKE 'ERP4:%' LIMIT 1")
+            cursor.execute(f"SELECT 1 FROM {table} WHERE `source_key` NOT LIKE 'ERP5:%' LIMIT 1")
             if cursor.fetchone():
                 raise SyncError("数据库中仍有旧版来源键；请先使用“清空并重新初始化”。")
             self._identity_checked.add(table_name)
@@ -1895,88 +1902,6 @@ class QmsDatabaseClient:
         dependents = [name for (name,) in cursor.fetchall()]
         if dependents:
             raise SyncError("有范围外的表引用目标表，初始化可能级联删除：" + ", ".join(dependents))
-
-    def _reconcile_customer_order_latest(self, cursor) -> int:
-        """Overwrite the original row with the latest row for each order and material."""
-        cursor.execute(
-            "SELECT `id`, `source_key`, `source_file`, `source_row_no`, `status`, "
-            "`erp_order_no`, `erp_internal_product_no`, `created_at` "
-            "FROM `qms_customer_order` WHERE `tenant_code` = %s",
-            (self.tenant,),
-        )
-        groups: Dict[Tuple[str, str], List[Tuple[Any, ...]]] = {}
-        for row in cursor.fetchall():
-            key = tuple(as_text(value).strip() for value in row[5:7])
-            if all(key):
-                groups.setdefault(key, []).append(row)
-
-        def source_date(row: Tuple[Any, ...]) -> date:
-            created = row[7]
-            if isinstance(created, str):
-                created = datetime.fromisoformat(created)
-            year = created.year if isinstance(created, (date, datetime)) else date.today().year
-            for part in reversed(str(row[2]).replace("\\", "/").split("/")[:-1]):
-                full = re.fullmatch(r"(20\d{2})-(\d{1,2})-(\d{1,2})", part)
-                short = re.fullmatch(r"(\d{1,2})-(\d{1,2})", part)
-                try:
-                    if full:
-                        return date(*(int(value) for value in full.groups()))
-                    if short:
-                        return date(year, *(int(value) for value in short.groups()))
-                except ValueError:
-                    continue
-            return date.min
-
-        changed = 0
-        copy_columns: Optional[List[str]] = None
-        for rows in groups.values():
-            current_rows = [row for row in rows if row[4] != "INACTIVE"]
-            candidates = current_rows or rows
-            latest = max(candidates, key=lambda row: (
-                source_date(row), str(row[7]), int(row[3]), str(row[1]),
-            ))
-            original = min(rows, key=lambda row: (str(row[7]), str(row[0])))
-            status = "ACTIVE" if current_rows else "INACTIVE"
-            if len(rows) > 1:
-                if copy_columns is None:
-                    copy_columns = [column for column in self._read_table_columns(
-                        cursor, "qms_customer_order",
-                    ) if column not in {
-                        "id", "tenant_code", "source_key", "status", "created_at", "updated_at",
-                    }]
-                if original is not latest:
-                    assignments = ", ".join(
-                        f"original.`{column.replace('`', '``')}` = latest.`{column.replace('`', '``')}`"
-                        for column in copy_columns
-                    )
-                    cursor.execute(
-                        "UPDATE `qms_customer_order` AS original "
-                        "JOIN `qms_customer_order` AS latest ON latest.`id` = %s "
-                        f"SET {assignments}, original.`updated_at` = CURRENT_TIMESTAMP(6) "
-                        "WHERE original.`tenant_code` = %s AND original.`id` = %s "
-                        "AND latest.`tenant_code` = %s",
-                        (latest[0], self.tenant, original[0], self.tenant),
-                    )
-                duplicates = [row[0] for row in rows if row is not original]
-                for offset in range(0, len(duplicates), 500):
-                    batch = duplicates[offset:offset + 500]
-                    placeholders = ", ".join(["%s"] * len(batch))
-                    cursor.execute(
-                        f"DELETE FROM `qms_customer_order` WHERE `tenant_code` = %s "
-                        f"AND `id` IN ({placeholders})",
-                        (self.tenant, *batch),
-                    )
-                    changed += cursor.rowcount
-            if original[1] != latest[1] or original[4] != status:
-                cursor.execute(
-                    "UPDATE `qms_customer_order` SET `source_key` = %s, `status` = %s, "
-                    "`updated_at` = CURRENT_TIMESTAMP(6) "
-                    "WHERE `tenant_code` = %s AND `id` = %s",
-                    (latest[1], status, self.tenant, original[0]),
-                )
-                if len(rows) == 1:
-                    changed += cursor.rowcount
-        return changed
 
     def _source_records_for_file(
         self, cursor, table_name: str, relative_file: str, absolute_file: str,
@@ -2246,7 +2171,7 @@ def synchronize_database_directory(
     if initialize and bool(config.get("skip_initialization", False)):
         raise SyncError("清空并重新初始化需要选择初始化数据目录，不能勾选“跳过初始化”。")
     loaded_state = {} if initialize else load_state()
-    if not initialize and not dry_run and loaded_state.get(SOURCE_IDENTITY_VERSION_STATE_KEY) != "4":
+    if not initialize and not dry_run and loaded_state.get(SOURCE_IDENTITY_VERSION_STATE_KEY) != "5":
         raise SyncError("来源键规则已更新；请先使用“清空并重新初始化”重建数据和断点。")
     previous = loaded_state
     next_state: Dict[str, str] = dict(previous)
@@ -2258,37 +2183,10 @@ def synchronize_database_directory(
     work_order_hashes: Dict[str, str] = {}
     work_order_sources: Dict[str, str] = {}
     source_tables: set[str] = set()
-    customer_order_touched = False
-    customer_order_preexisting = False
     client = None if dry_run or not scan_groups else QmsDatabaseClient(config)
 
-    def reconcile_customer_orders() -> int:
-        nonlocal client
-        if client is None:
-            client = QmsDatabaseClient(config)
-        connection = client._connect()
-        try:
-            try:
-                with connection.cursor() as cursor:
-                    changed = (
-                        client._reconcile_customer_order_latest(cursor)
-                        if "qms_customer_order" in client._existing_source_tables(cursor) else 0
-                    )
-                connection.commit()
-                return changed
-            except Exception:
-                connection.rollback()
-                raise
-        finally:
-            connection.close()
-
     if not scan_groups:
-        if not dry_run and previous.get(CUSTOMER_ORDER_RECONCILE_STATE_KEY) != CUSTOMER_ORDER_RECONCILE_VERSION:
-            changed = reconcile_customer_orders()
-            previous[CUSTOMER_ORDER_RECONCILE_STATE_KEY] = CUSTOMER_ORDER_RECONCILE_VERSION
-            save_state(previous)
-            callback(f"已整理存量客户订单：合并或更新 {changed:,} 条记录。")
-        elif not dry_run and progress_directory().is_dir():
+        if not dry_run and progress_directory().is_dir():
             save_state(previous)
         if not dry_run:
             clear_file_progress()
@@ -2302,7 +2200,6 @@ def synchronize_database_directory(
 
     def process_file(group: SourceScanGroup, path: Path, cursor) -> Tuple[Dict[str, str], Dict[str, Any]]:
         nonlocal added, updated, unchanged, written_raw, written_work_orders
-        nonlocal customer_order_preexisting
         pending_table: Optional[str] = None
         pending_records: List[RawSourceRecord] = []
         file_state: Dict[str, str] = {}
@@ -2311,8 +2208,6 @@ def synchronize_database_directory(
         order_keys: set[str] = set()
         batch_keys: set[str] = set()
         relative_file = path.relative_to(group.directory).as_posix()
-        if cursor is not None:
-            customer_order_preexisting |= "qms_customer_order" in client._existing_source_tables(cursor)
 
         def flush_raw_records() -> None:
             nonlocal pending_table, pending_records, written_raw
@@ -2447,9 +2342,6 @@ def synchronize_database_directory(
                             membership, ensure_ascii=False, separators=(",", ":"),
                         )
                         next_state.update(file_state)
-                        customer_order_touched |= "qms_customer_order" in membership["raw"]
-                if customer_order_touched:
-                    client._reconcile_customer_order_latest(cursor)
             connection.commit()
         except Exception as exc:
             connection.rollback()
@@ -2458,13 +2350,12 @@ def synchronize_database_directory(
             raise
         finally:
             connection.close()
-        next_state[SOURCE_IDENTITY_VERSION_STATE_KEY] = "4"
-        next_state[CUSTOMER_ORDER_RECONCILE_STATE_KEY] = CUSTOMER_ORDER_RECONCILE_VERSION
+        next_state[SOURCE_IDENTITY_VERSION_STATE_KEY] = "5"
 
     for group in (() if initialize and not dry_run else scan_groups):
         label = "初始化数据" if group.role == "initialization" else "增量数据"
         callback(f"开始处理{label}目录：{group.directory}")
-        for path in group.files:
+        for file_index, path in enumerate(group.files):
             file_key = source_file_state_key(group.role, group.directory, path)
             relative_file = path.relative_to(group.directory).as_posix()
             try:
@@ -2487,14 +2378,6 @@ def synchronize_database_directory(
                             raise SyncError(f"源文件处理期间发生覆盖：{relative_file}；请重试。")
                         removed = removed_file_membership(next_state, file_key, membership)
                         deactivated_for_file = client._deactivate_removed_file_records(cursor, removed)
-                        customer_order_in_file = (
-                            "qms_customer_order" in membership["raw"]
-                            or "qms_customer_order" in removed["raw"]
-                        )
-                        reconciled_for_file = (
-                            client._reconcile_customer_order_latest(cursor)
-                            if customer_order_in_file else 0
-                        )
                     connection.commit()
                 except Exception as exc:
                     try:
@@ -2514,10 +2397,15 @@ def synchronize_database_directory(
                 except Exception:
                     pass
             file_state[file_key] = checkpoint
-            file_state[SOURCE_IDENTITY_VERSION_STATE_KEY] = "4"
-            if group.role == "initialization" and any(
+            file_state[SOURCE_IDENTITY_VERSION_STATE_KEY] = "5"
+            if (group.role == "initialization" and any(
                 planned.role == "incremental" for planned in scan_groups
-            ):
+            )) or (group.role == "incremental" and any(
+                previous.get(source_file_state_key("incremental", group.directory, later))
+                == checkpoints[source_file_state_key("incremental", group.directory, later)]
+                for later in group.files[file_index + 1:]
+            )):
+                # A failed later export must still replay after this checkpoint is saved.
                 file_state[BASELINE_REPLAY_STATE_KEY] = "1"
             file_state[file_membership_state_key(file_key)] = json.dumps(
                 membership, ensure_ascii=False, separators=(",", ":"),
@@ -2530,9 +2418,6 @@ def synchronize_database_directory(
                 ) from exc
             next_state.update(file_state)
             deactivated += deactivated_for_file
-            customer_order_touched |= customer_order_in_file
-            if customer_order_in_file:
-                callback(f"已合并或更新 {reconciled_for_file:,} 条客户订单记录。")
             callback(f"已提交并保存断点：{relative_file}。")
 
     work_order_added = work_order_updated = 0
@@ -2547,11 +2432,6 @@ def synchronize_database_directory(
     if dry_run:
         callback("预演模式：已遍历全部 Excel 文件和工作表，未向 QMS 写入任何数据。")
     else:
-        if not initialize and previous.get(CUSTOMER_ORDER_RECONCILE_STATE_KEY) != CUSTOMER_ORDER_RECONCILE_VERSION:
-            changed = reconcile_customer_orders() if customer_order_preexisting and not customer_order_touched else 0
-            next_state[CUSTOMER_ORDER_RECONCILE_STATE_KEY] = CUSTOMER_ORDER_RECONCILE_VERSION
-            if customer_order_preexisting and not customer_order_touched:
-                callback(f"已整理客户订单：合并或更新 {changed:,} 条记录。")
         if any(group.role == "incremental" for group in scan_groups):
             next_state[BASELINE_REPLAY_STATE_KEY] = "0"
         try:

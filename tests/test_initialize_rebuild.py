@@ -12,11 +12,27 @@ from pymysql.cursors import RE_INSERT_VALUES
 
 
 class SourceIdentityTests(unittest.TestCase):
+    def test_finished_goods_receipt_uses_erp_receipt_id_before_shared_receipt_number(self):
+        first = {
+            "erp_receipt_id_m": "DG01646538", "erp_receipt_no": "DF01173552",
+            "erp_internal_product_no": "02PH02148A01", "erp_current_receipt_quantity": "100",
+        }
+        other_detail = {**first, "erp_receipt_id_m": "DG01646533"}
+        updated = {**first, "erp_current_receipt_quantity": "200"}
+        self.assertNotEqual(
+            sync.erp_row_identity("qms_finished_goods_receipt", first),
+            sync.erp_row_identity("qms_finished_goods_receipt", other_detail),
+        )
+        self.assertEqual(
+            sync.erp_row_identity("qms_finished_goods_receipt", first),
+            sync.erp_row_identity("qms_finished_goods_receipt", updated),
+        )
+
     def test_raw_upsert_is_compatible_with_pymysql_multirow_insert(self):
         client = sync.QmsDatabaseClient(sync.DEFAULT_CONFIG)
         cursor = Mock()
         records = [sync.RawSourceRecord(
-            "a.xls", "Sheet1", number, str(number), f"ERP4:{number}", "hash", {},
+            "a.xls", "Sheet1", number, str(number), f"ERP5:{number}", "hash", {},
             "qms_material", {},
         ) for number in (2, 3)]
         client._upsert_source_records(cursor, "qms_material", records, ensure_schema=False)
@@ -26,18 +42,21 @@ class SourceIdentityTests(unittest.TestCase):
 
     def test_existing_legacy_database_keys_require_rebuild(self):
         class Cursor:
-            def execute(self, *_args):
-                pass
+            def execute(self, statement, *_args):
+                self.statement = statement
 
             def fetchone(self):
-                return (1,)
+                return (1,) if "NOT LIKE 'ERP5:%'" in self.statement else None
+
+            def executemany(self, *_args):
+                pass
 
         client = sync.QmsDatabaseClient({
             "database_host": "localhost", "database_port": "3306",
             "database_name": "qms", "database_username": "qms", "tenant_code": "t",
         })
         record = sync.RawSourceRecord(
-            "a.xls", "Sheet1", 2, "A", "ERP4:new", "hash", {},
+            "a.xls", "Sheet1", 2, "A", "ERP5:new", "hash", {},
             "qms_material", {},
         )
         with patch.object(client, "_ensure_source_table_schema"):
@@ -64,6 +83,49 @@ class SourceIdentityTests(unittest.TestCase):
         self.assertEqual(first.source_key, changed.source_key)
         self.assertNotEqual(first.row_hash, changed.row_hash)
         self.assertNotEqual(first.source_key, other_line.source_key)
+
+    def test_customer_order_occurrences_keep_identical_rows_and_match_later_exports(self):
+        class Registry:
+            def canonical_headers_for(self, _source_file, headers):
+                return headers
+
+            def resolve_sheet(self, table, source_file, sheet, headers):
+                columns = (
+                    "erp_order_no", "erp_internal_product_no",
+                    "erp_delivery_date", "erp_order_placed_quantity",
+                )
+                return [sync.ErpFieldDefinition(
+                    table, source_file, sheet, header, header, column,
+                    column, header, index,
+                ) for index, (header, column) in enumerate(zip(headers, columns), 1)]
+
+        with tempfile.TemporaryDirectory() as temporary:
+            exports = []
+            for day, quantities in (("baseline", (4000, 7025)), ("daily", (5000, 8000))):
+                folder = Path(temporary) / day
+                folder.mkdir()
+                path = folder / "客户订单资料.xlsx"
+                workbook = Workbook()
+                first = workbook.active
+                first.title = "前两行"
+                first.append(["订单编号", "厂内编号", "交期", "下单数量"])
+                first.append(["PI1", "L1", "2025-01-17", quantities[0]])
+                first.append(["PI1", "L1", "2025-03-30", quantities[1]])
+                second = workbook.create_sheet("另一工作表")
+                second.append(["订单编号", "厂内编号", "交期", "下单数量"])
+                second.append(["PI1", "L1", "2025-03-30", quantities[1]])
+                workbook.save(path)
+                with patch.object(sync, "load_erp_field_registry", return_value=Registry()):
+                    exports.append([record for record, _ in sync.iter_all_source_records(
+                        {}, lambda _: None, sync.SourceScanStats(),
+                        source_directory=folder, selected_files=(path,),
+                    )])
+
+        baseline, daily = exports
+        self.assertEqual(3, len({row.source_key for row in baseline}))
+        self.assertEqual([row.source_key for row in baseline], [row.source_key for row in daily])
+        self.assertNotEqual(baseline[0].row_hash, daily[0].row_hash)
+        self.assertTrue(all(row.source_key.startswith("ERP5:") for row in baseline))
 
 
 class InitializationTests(unittest.TestCase):
