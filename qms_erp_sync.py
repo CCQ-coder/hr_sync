@@ -1282,11 +1282,14 @@ def raw_business_key(row: Mapping[str, Any], row_no: int) -> str:
 def iter_all_source_records(
     config: Mapping[str, Any], callback: Callable[[str], None], stats: SourceScanStats,
     *, source_directory: Optional[Path] = None, selected_files: Optional[Sequence[Path]] = None,
+    headers_only: bool = False,
+    on_sheet: Optional[Callable[[str, Mapping[str, ErpFieldDefinition]], None]] = None,
 ) -> Iterable[Tuple[RawSourceRecord, Optional[Dict[str, Any]]]]:
     """Traverse every Excel file and every worksheet below the configured directory.
 
     The keyword selects only the workbook whose rows are additionally mapped to
     QMS work orders.  It never filters the ERP raw-record import.
+    Header-only scans resolve every sheet's field definitions without converting rows.
     """
     if source_directory is None:
         initialization, _, _ = configured_source_directories(config)
@@ -1334,10 +1337,16 @@ def iter_all_source_records(
                     definitions = registry.resolve_sheet(
                         target_table or "qms_work_order", relative_file, sheet.title, raw_header_values,
                     )
+                    if on_sheet is not None:
+                        on_sheet(target_table or "qms_work_order", {
+                            field.database_column: field for field in definitions
+                        })
                     callback(
                         f"  工作表：{sheet.title}（{'工单映射 + 实体字段写入' if is_work_order else '实体字段写入'}，"
                         f"目标表：{target_table or 'qms_work_order / qms_production_batch'}）"
                     )
+                    if headers_only:
+                        continue
                     for row_index, values_row in enumerate(values, start=2):
                         row = {
                             normalized_headers[index]: values_row[index] if index < len(values_row) else None
@@ -1382,10 +1391,16 @@ def iter_all_source_records(
                 definitions = registry.resolve_sheet(
                     target_table or "qms_work_order", relative_file, sheet_name, raw_header_values,
                 )
+                if on_sheet is not None:
+                    on_sheet(target_table or "qms_work_order", {
+                        field.database_column: field for field in definitions
+                    })
                 callback(
                     f"  工作表：{sheet_name}（{'工单映射 + 实体字段写入' if is_work_order else '实体字段写入'}，"
                     f"目标表：{target_table or 'qms_work_order / qms_production_batch'}）"
                 )
+                if headers_only:
+                    continue
                 for zero_based_row in range(1, sheet.nrows):
                     values_row = [
                         decode_erp_xls_cell(value, workbook.encoding, decode_warnings)
@@ -1764,7 +1779,8 @@ class QmsDatabaseClient:
         ]
         quoted_columns = [f"`{column}`" if not column.startswith(ERP_FIELD_PREFIX) else self._parameterized_column_name(column)
                           for column in value_columns]
-        placeholders = ", ".join(["%s"] * len(value_columns) + ["'ACTIVE'", "CURRENT_TIMESTAMP(6)", "CURRENT_TIMESTAMP(6)"])
+        # PyMySQL batches executemany only when every INSERT value is a placeholder.
+        placeholders = ", ".join(["%s"] * len(value_columns))
         update_columns = [
             "`source_file` = VALUES(`source_file`)",
             "`sheet_name` = VALUES(`sheet_name`)",
@@ -1780,9 +1796,7 @@ class QmsDatabaseClient:
             "`updated_at` = CURRENT_TIMESTAMP(6)",
         ]
         statement = f"""
-            INSERT INTO {table} (
-                {", ".join(quoted_columns)}, `status`, `created_at`, `updated_at`
-            ) VALUES ({placeholders})
+            INSERT INTO {table} ({", ".join(quoted_columns)}) VALUES ({placeholders})
             ON DUPLICATE KEY UPDATE
                 {", ".join(update_columns)}
         """
@@ -2236,7 +2250,7 @@ def synchronize_database_directory(
         raise SyncError("来源键规则已更新；请先使用“清空并重新初始化”重建数据和断点。")
     previous = loaded_state
     next_state: Dict[str, str] = dict(previous)
-    scan_groups, _ = build_source_scan_plan(config, previous, force_all=initialize)
+    scan_groups, checkpoints = build_source_scan_plan(config, previous, force_all=initialize)
     initialization, incremental, _ = configured_source_directories(config)
     source_description = f"初始化={initialization or '已跳过'}；增量={incremental or '未配置'}"
     stats = SourceScanStats()
@@ -2386,20 +2400,25 @@ def synchronize_database_directory(
 
     if initialize and not dry_run:
         assert client is not None
-        callback("正在预检全部 Excel，并准备数据库字段；预检通过后才清空目标表。")
+        # shortcut: bad data rows may leave preflight DDL behind; stage schemas if DDL rollback is required.
+        callback("正在预检全部 Excel 表头并准备数据库字段；预检通过后才清空目标表。")
         fields_by_table: Dict[str, Dict[str, ErpFieldDefinition]] = {}
         checked_files: Dict[str, str] = {}
+
+        def collect_sheet_fields(table_name: str, fields: Mapping[str, ErpFieldDefinition]) -> None:
+            fields_by_table.setdefault(table_name, {}).update(fields)
+
         for group in scan_groups:
             for path in group.files:
-                checked_files[str(path)] = source_file_checkpoint(path)
-                for raw, payload in iter_all_source_records(
+                checked_files[str(path)] = checkpoints[
+                    source_file_state_key(group.role, group.directory, path)
+                ]
+                for _ in iter_all_source_records(
                     config, callback, SourceScanStats(),
                     source_directory=group.directory, selected_files=(path,),
+                    headers_only=True, on_sheet=collect_sheet_fields,
                 ):
-                    if raw.source_table:
-                        fields_by_table.setdefault(raw.source_table, {}).update(raw.field_definitions)
-                    if payload is not None:
-                        fields_by_table.setdefault("qms_work_order", {}).update(payload["erpFieldDefinitions"])
+                    pass
                 if source_file_checkpoint(path) != checked_files[str(path)]:
                     raise SyncError(f"源文件预检期间发生覆盖：{path}；请重试。")
         connection = client._connect()

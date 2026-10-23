@@ -3,12 +3,27 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+
+from openpyxl import Workbook
 
 import qms_erp_sync as sync
+from pymysql.cursors import RE_INSERT_VALUES
 
 
 class SourceIdentityTests(unittest.TestCase):
+    def test_raw_upsert_is_compatible_with_pymysql_multirow_insert(self):
+        client = sync.QmsDatabaseClient(sync.DEFAULT_CONFIG)
+        cursor = Mock()
+        records = [sync.RawSourceRecord(
+            "a.xls", "Sheet1", number, str(number), f"ERP4:{number}", "hash", {},
+            "qms_material", {},
+        ) for number in (2, 3)]
+        client._upsert_source_records(cursor, "qms_material", records, ensure_schema=False)
+        statement, rows = cursor.executemany.call_args.args
+        self.assertEqual(2, len(rows))
+        self.assertIsNotNone(RE_INSERT_VALUES.match(statement))
+
     def test_existing_legacy_database_keys_require_rebuild(self):
         class Cursor:
             def execute(self, *_args):
@@ -52,6 +67,60 @@ class SourceIdentityTests(unittest.TestCase):
 
 
 class InitializationTests(unittest.TestCase):
+    def test_header_preflight_collects_fields_without_converting_data_rows(self):
+        field = sync.ErpFieldDefinition(
+            "qms_purchase_order", "采购订单资料.xls", "Test", "采购单号", "采购单号",
+            "erp_purchase_order_no", sync.legacy_database_column_name("采购单号"),
+            sync.erp_column_comment("采购单号"), 1,
+        )
+        registry = sync.ErpFieldRegistry([field])
+        sheet = Mock(nrows=2)
+        sheet.row_values.side_effect = lambda row: ["采购单号"] if row == 0 else self.fail("read data row")
+        workbook = Mock(encoding="utf-8", biff_version=80, datemode=0)
+        workbook.sheet_names.return_value = ["Test"]
+        workbook.sheet_by_name.return_value = sheet
+        found = []
+        stats = sync.SourceScanStats()
+        root = Path("/tmp/erp-preflight")
+        with patch.object(sync, "open_erp_xls", return_value=workbook), \
+                patch.object(sync, "load_erp_field_registry", return_value=registry):
+            rows = list(sync.iter_all_source_records(
+                {}, lambda _: None, stats, source_directory=root,
+                selected_files=[root / "采购订单资料.xls"], headers_only=True,
+                on_sheet=lambda table, fields: found.append((table, fields)),
+            ))
+        self.assertEqual([], rows)
+        self.assertEqual([("qms_purchase_order", {field.database_column: field})], found)
+        self.assertEqual((1, 1, 0), (stats.files_scanned, stats.sheets_scanned, stats.raw_records))
+
+    def test_header_preflight_skips_xlsx_data_rows(self):
+        field = sync.ErpFieldDefinition(
+            "qms_purchase_order", "采购订单资料.xls", "Test", "采购单号", "采购单号",
+            "erp_purchase_order_no", sync.legacy_database_column_name("采购单号"),
+            sync.erp_column_comment("采购单号"), 1,
+        )
+        registry = sync.ErpFieldRegistry([field])
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workbook = Workbook()
+            workbook.active.title = "Test"
+            workbook.active.append(["采购单号"])
+            workbook.active.append(["PO-1"])
+            path = root / "采购订单资料.xlsx"
+            workbook.save(path)
+            workbook.close()
+            found = []
+            stats = sync.SourceScanStats()
+            with patch.object(sync, "load_erp_field_registry", return_value=registry):
+                rows = list(sync.iter_all_source_records(
+                    {}, lambda _: None, stats, source_directory=root,
+                    selected_files=[path], headers_only=True,
+                    on_sheet=lambda table, fields: found.append((table, fields)),
+                ))
+        self.assertEqual([], rows)
+        self.assertEqual([("qms_purchase_order", {field.database_column: field})], found)
+        self.assertEqual(0, stats.raw_records)
+
     def test_clear_rejects_nontransactional_tables_and_external_dependents(self):
         class Cursor:
             def __init__(self, answers):
@@ -155,8 +224,12 @@ class InitializationTests(unittest.TestCase):
             def _upsert_source_records(self, *_args, **_kwargs):
                 raise sync.SyncError("write failed")
 
-        def records(_config, _callback, stats, *, source_directory, selected_files):
+        def records(_config, _callback, stats, *, source_directory, selected_files,
+                    headers_only=False, on_sheet=None):
             stats.files_scanned += 1
+            if headers_only:
+                on_sheet("qms_material", {})
+                return
             stats.raw_records += 1
             yield sync.RawSourceRecord(
                 source_file=selected_files[0].name, sheet_name="Sheet1", source_row_no=2,
