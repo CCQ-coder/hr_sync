@@ -74,6 +74,11 @@ class TrailingSummaryRowsTests(unittest.TestCase):
         rows = [(2, ["明细一", 2]), (3, ["明细二", "汇总"])]
         self.assertEqual(rows, list(sync.without_trailing_summary_rows(rows)))
 
+    def test_empty_date_placeholder_before_footer_label(self):
+        detail = (50, ["RK2610-0012", "正常明细"])
+        footer = (51, [None, None, "  -   -  : :", None, None, None, "合计：", 2514])
+        self.assertEqual([detail], list(sync.without_trailing_summary_rows([detail, footer])))
+
 
 if __name__ == "__main__":
     unittest.main()

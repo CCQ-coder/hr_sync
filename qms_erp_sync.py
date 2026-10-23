@@ -1288,7 +1288,12 @@ def without_trailing_summary_rows(
     pending: List[Tuple[int, Sequence[Any]]] = []
     for row in rows:
         values = row[1]
-        first_value = next((value for value in values if not is_empty(value)), None)
+        # Blank ERP date cells can contain "- - : :" before the total label.
+        first_value = next((
+            value for value in values
+            if not is_empty(value)
+            and not (isinstance(value, str) and re.fullmatch(r"[\s\-:：]+", value))
+        ), None)
         if first_value is None:
             continue
         if isinstance(first_value, str) and (
