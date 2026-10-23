@@ -446,7 +446,7 @@ class MainTests(unittest.TestCase):
             self.assertEqual(b"PE\x00\x00", handle.read(4))
             self.assertEqual(0x014C, int.from_bytes(handle.read(2), byteorder="little"))
 
-    def test_xp32_build_creates_x86_folder_bundle_with_runtime_configuration(self):
+    def test_xp32_build_creates_x86_folder_bundle_without_device_configuration(self):
         """An XP host cannot start a Python 3.8 runtime or a modern PyInstaller bootloader."""
         project_root = Path(__file__).resolve().parents[1]
         result = subprocess.run(
@@ -470,7 +470,11 @@ class MainTests(unittest.TestCase):
         bundle_directory = project_root / "dist-xp32" / "IniShareSync"
         executable = bundle_directory / "IniShareSync.exe"
         self.assertTrue(executable.is_file())
-        self.assertTrue((bundle_directory / "sync_config.json").is_file())
+        self.assertFalse((bundle_directory / "sync_config.json").exists())
+        self.assertFalse((bundle_directory / "sync_state.json").exists())
+        self.assertTrue((bundle_directory / "sync_config.example.json").is_file())
+        self.assertTrue((bundle_directory / "setup_tasks.cmd").is_file())
+        self.assertTrue((bundle_directory / "更新说明.txt").is_file())
         self.assertTrue((bundle_directory / "python34.dll").is_file())
         with executable.open("rb") as handle:
             self.assertEqual(b"MZ", handle.read(2))
@@ -488,7 +492,7 @@ class MainTests(unittest.TestCase):
             source_root = Path(directory) / "source"
             source_root.mkdir()
             config_path = deployed_bundle / "sync_config.json"
-            with config_path.open(encoding="utf-8") as handle:
+            with (deployed_bundle / "sync_config.example.json").open(encoding="utf-8-sig") as handle:
                 config = json.load(handle)
             config["source_root"] = str(source_root)
             config["device_id"] = "XP-SMOKE-CHECK"

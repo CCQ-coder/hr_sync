@@ -28,8 +28,12 @@ if ($LASTEXITCODE -ne 0) {
     throw "Windows XP 32 位 PyInstaller 打包失败，退出码：$LASTEXITCODE"
 }
 
-$configPath = Join-Path $projectRoot "sync_config.json"
-Copy-Item -LiteralPath $configPath -Destination (Join-Path $bundlePath "sync_config.json") -Force
+foreach ($name in @("sync_config.json", "sync_state.json", "ini_share_sync.lock", "ini_share_sync_status.lock", "logs")) {
+    Remove-Item -LiteralPath (Join-Path $bundlePath $name) -Recurse -Force -ErrorAction SilentlyContinue
+}
+foreach ($name in @("sync_config.example.json", "setup_tasks.cmd", "更新说明.txt")) {
+    Copy-Item -LiteralPath (Join-Path $projectRoot $name) -Destination (Join-Path $bundlePath $name) -Force
+}
 
 $executablePath = Join-Path $bundlePath "IniShareSync.exe"
 $executableBytes = [System.IO.File]::ReadAllBytes($executablePath)
@@ -37,6 +41,10 @@ $peOffset = [System.BitConverter]::ToInt32($executableBytes, 0x3C)
 $machine = [System.BitConverter]::ToUInt16($executableBytes, $peOffset + 4)
 if ($machine -ne 0x014C) {
     throw "打包产物不是 x86 PE 文件，Machine=0x$($machine.ToString('X4'))"
+}
+$subsystem = [System.BitConverter]::ToUInt16($executableBytes, $peOffset + 92)
+if ($subsystem -ne 2) {
+    throw "打包产物不是无窗口程序，Subsystem=$subsystem"
 }
 
 Write-Host "Windows XP 32 位打包完成：$executablePath"

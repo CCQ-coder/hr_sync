@@ -12,7 +12,7 @@
 
 ## 1. 配置
 
-编辑同目录的 [sync_config.json](sync_config.json)：
+首次安装时，将 [sync_config.example.json](sync_config.example.json) 复制为 `sync_config.json` 后编辑：
 
 ```json
 {
@@ -68,6 +68,8 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\install_sync_task.ps1 -PackageDirectory dist-win32
 ```
 
+安装前可用 `.\install_sync_task.ps1 -PackageDirectory dist-win32 -WhatIf` 预览。
+
 部署到 Windows 7 时，完整复制 `dist-win32` 文件夹（不要只复制 EXE），以及 `install_sync_task.ps1`、`remove_sync_task.ps1` 和本说明即可。新电脑不需要安装 Python。
 
 安装和卸载脚本使用 Windows 自带的 `schtasks.exe`，兼容 Windows 7。`IniShareSync` 每 5 分钟同步文件；独立的 `IniShareSyncStatus` 每 1 分钟采集状态，上一轮尚未结束时忽略新的状态运行请求。任务设置为“用户登录时运行”；请保持该账户已登录，才能让计划任务按时执行。
@@ -80,39 +82,9 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\build_exe_xp32.ps1
 ```
 
-该脚本使用项目内的 32 位 Python 3.4 和 PyInstaller 3.4，生成 XP 可启动的文件夹包：`dist-xp32\IniShareSync\IniShareSync.exe`。EXE 使用静默模式，双击和计划任务执行时不显示黑色窗口；日志仍保存在同目录的 `logs` 文件夹。请完整复制 `dist-xp32` 文件夹，不能只复制 EXE；目标电脑无需安装 Python。
+该脚本使用项目内的 32 位 Python 3.4 和 PyInstaller 3.4，生成唯一的 XP 更新包 `dist-xp32\IniShareSync\`。其中包含无黑窗 `IniShareSync.exe`、完整运行库、`sync_config.example.json`、`setup_tasks.cmd` 和 `更新说明.txt`，不包含任何设备的真实配置或同步记录。只需把这个文件夹的内容复制到飞针机原安装目录；首次安装先把配置示例复制为 `sync_config.json` 并填写唯一 `device_id`。随后在该目录的 CMD 中运行一次 `setup_tasks.cmd`。周期任务直接调用无黑窗 EXE，不调用 CMD；具体更新和验证步骤见包内 `更新说明.txt`。XP 的开机时长计数约每 49.7 天回绕一次，此时 QMS 显示的开机时长会重新从零计起。
 
-编辑 `dist-xp32\IniShareSync\sync_config.json` 中的 `device_id` 后，在部署目录运行：
-
-```powershell
-.\install_sync_task.ps1 -PackageDirectory dist-xp32
-```
-
-XP 自带的是旧版计划任务，安装脚本会创建三个任务：`IniShareSync` 每 5 分钟同步文件，`IniShareSyncStartup` 在电脑启动时同步一次，`IniShareSyncStatus` 每 1 分钟采集状态。它们以执行安装命令的当前 Windows 账户运行。因此该账户需保持登录，且必须对共享目录有写入权限。若刚开机时网络共享尚未可用，会记录失败，下一次计划任务会重试。XP 的开机时长计数约每 49.7 天回绕一次，此时 QMS 显示的开机时长会重新从零计起。
-
-若 XP 没有安装 PowerShell，可在管理员 CMD 中进入部署目录后直接创建任务（将示例路径替换为实际路径）：
-
-```bat
-schtasks /Create /SC MINUTE /MO 5 /TN IniShareSync /TR D:\ini_share_sync\dist-xp32\IniShareSync\IniShareSync.exe /F
-schtasks /Create /SC ONSTART /TN IniShareSyncStartup /TR D:\ini_share_sync\dist-xp32\IniShareSync\IniShareSync.exe /F
-schtasks /Create /SC MINUTE /MO 1 /TN IniShareSyncStatus /TR "D:\ini_share_sync\dist-xp32\IniShareSync\IniShareSync.exe --status-only" /F
-```
-
-需要删除该任务时运行：
-
-```bat
-schtasks /Delete /TN IniShareSync /F
-schtasks /Delete /TN IniShareSyncStartup /F
-schtasks /Delete /TN IniShareSyncStatus /F
-```
-
-安装前可进行无修改演练：
-
-```powershell
-.\install_sync_task.ps1 -WhatIf
-```
-
-## 4. 一键删除计划任务
+## 4. 卸载 PowerShell 版计划任务
 
 执行以下命令即可删除本工具创建的计划任务：
 
@@ -120,7 +92,7 @@ schtasks /Delete /TN IniShareSyncStatus /F
 .\remove_sync_task.ps1
 ```
 
-它会移除每 5 分钟文件同步、开机同步和每 1 分钟状态采集任务；不会删除配置、日志、状态文件、源 INI、共享目录中的 TXT 或 `host-status.json`。要回退设备端程序，先卸载任务，再恢复备份的 EXE 包和配置，最后用旧版脚本重装原任务。删除前同样可以使用 `-WhatIf` 预览：
+此脚本用于上面的通用版和 Win7 安装方式；XP 更新包只需运行包内 `setup_tasks.cmd`，它会替换本工具旧任务。卸载脚本不会删除配置、日志、状态文件、源 INI、共享目录中的 TXT 或 `host-status.json`。删除前可使用 `-WhatIf` 预览：
 
 ```powershell
 .\remove_sync_task.ps1 -WhatIf
