@@ -29,7 +29,13 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 foreach ($name in @("sync_config.json", "sync_state.json", "ini_share_sync.lock", "ini_share_sync_status.lock", "logs")) {
-    Remove-Item -LiteralPath (Join-Path $bundlePath $name) -Recurse -Force -ErrorAction SilentlyContinue
+    $path = Join-Path $bundlePath $name
+    if (Test-Path -LiteralPath $path) {
+        Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction Stop
+    }
+    if (Test-Path -LiteralPath $path) {
+        throw "构建目录仍含设备数据：$path"
+    }
 }
 foreach ($name in @("sync_config.example.json", "setup_tasks.cmd", "更新说明.txt")) {
     Copy-Item -LiteralPath (Join-Path $projectRoot $name) -Destination (Join-Path $bundlePath $name) -Force

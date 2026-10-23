@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import runpy
 import shutil
 import subprocess
 import sys
@@ -16,6 +17,29 @@ from ini_share_sync.transfer import copy_as_txt
 
 
 class MainTests(unittest.TestCase):
+    def test_packaged_entrypoint_exits_silently_when_import_fails(self):
+        """An import failure must not open a PyInstaller error dialog."""
+        entry_point = Path(__file__).resolve().parents[1] / "run_ini_share_sync.py"
+        original_import = __import__
+
+        def fail_main_import(name, *args, **kwargs):
+            if name == "ini_share_sync.main":
+                raise ImportError("missing runtime module")
+            return original_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=fail_main_import):
+            with self.assertRaises(SystemExit) as result:
+                runpy.run_path(str(entry_point), run_name="__main__")
+        self.assertEqual(1, result.exception.code)
+
+    def test_packaged_entrypoint_exits_silently_when_logging_cannot_start(self):
+        """A windowless scheduled task must not show a PyInstaller error dialog."""
+        entry_point = Path(__file__).resolve().parents[1] / "run_ini_share_sync.py"
+        with patch("ini_share_sync.main.main", side_effect=OSError("log directory unavailable")):
+            with self.assertRaises(SystemExit) as result:
+                runpy.run_path(str(entry_point), run_name="__main__")
+        self.assertEqual(1, result.exception.code)
+
     def write_config(self, root, target_root=None):
         config_path = root / "sync_config.json"
         config_path.write_text(
@@ -472,7 +496,13 @@ class MainTests(unittest.TestCase):
         self.assertTrue(executable.is_file())
         self.assertFalse((bundle_directory / "sync_config.json").exists())
         self.assertFalse((bundle_directory / "sync_state.json").exists())
+        self.assertFalse((bundle_directory / "ini_share_sync.lock").exists())
+        self.assertFalse((bundle_directory / "ini_share_sync_status.lock").exists())
+        self.assertFalse((bundle_directory / "logs").exists())
         self.assertTrue((bundle_directory / "sync_config.example.json").is_file())
+        self.assertTrue(
+            (bundle_directory / "sync_config.example.json").read_bytes().startswith(b"\xef\xbb\xbf")
+        )
         self.assertTrue((bundle_directory / "setup_tasks.cmd").is_file())
         self.assertTrue((bundle_directory / "更新说明.txt").is_file())
         self.assertTrue((bundle_directory / "python34.dll").is_file())

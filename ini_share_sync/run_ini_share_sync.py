@@ -1,7 +1,10 @@
 """Package entry point for IniShareSync."""
 
-from ini_share_sync.main import main
-
-
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        from ini_share_sync.main import main
+
+        raise SystemExit(main())
+    except Exception:
+        # A windowless scheduled task must exit instead of showing a traceback dialog.
+        raise SystemExit(1)

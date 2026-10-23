@@ -6,13 +6,15 @@ IniShareSync.exe；它已经是无黑窗程序。setup_tasks.cmd 只在安装或
 
 已有设备更新
 1. 在飞针机上打开“计划任务”，记下旧 IniShareSync 任务的程序路径，
-   找到该程序所在的安装目录。先备份整个安装目录。
-2. 在任务空闲时，将本包中的文件复制到原安装目录，覆盖同名程序文件。
+   找到该程序所在的安装目录。先备份整个安装目录，并暂时禁用旧任务。
+2. 结束正在运行的旧程序，再将本包中的文件复制到原安装目录，覆盖同名程序文件。
    本包没有 sync_config.json 和 sync_state.json；请保留设备原有的这两个文件。
    不要从其他飞针机复制配置，否则设备编号会混淆。
-3. 在该安装目录打开 CMD，运行 setup_tasks.cmd。它会移除旧的开机任务，
-   并创建两个计划任务。按系统提示输入当前 Windows 账户密码；此账户须有
-   写入 \\SCBGX\数字化\飞针机 的权限。
+3. 在该安装目录打开 CMD，运行 setup_tasks.cmd。它会先测试状态上报，
+   保留已有任务的周期和账户，将旧开机任务也改为直接运行无窗口 EXE，
+   并新增缺少的任务。若系统提示输入账户密码，
+   请使用有权写入 \\SCBGX\数字化\飞针机 的账户。运行结束后重新启用旧任务；
+   若脚本失败，旧任务仍在，先恢复旧任务，再检查配置、共享权限和日志。
 4. 等待约 2 分钟，检查 logs\host-status-当天日期.log 和共享目录中的
    \\SCBGX\数字化\飞针机\<device_id>\host-status.json。
 
@@ -20,8 +22,11 @@ IniShareSync.exe；它已经是无黑窗程序。setup_tasks.cmd 只在安装或
 1. 把整个程序包复制到飞针机的 C:\IniShareSync。
 2. 将 sync_config.example.json 复制为 sync_config.json，编辑 device_id
    为本机唯一设备编号；确认 source_root 和 target_root 正确。
-3. 在 C:\IniShareSync 打开 CMD，运行 setup_tasks.cmd，再按上面的第 4 步验证。
+3. 用有权写入共享目录的 Windows 账户，在 C:\IniShareSync 打开 CMD，
+   运行 setup_tasks.cmd，再按上面的第 4 步验证。
 
-计划任务只需两个：IniShareSync 每 5 分钟同步 INI；IniShareSyncStatus 每 1 分钟
-写本机状态。定时动作直接运行无黑窗程序，不运行 CMD。出错只看本目录 logs。
+新安装默认有两个计划任务：IniShareSync 每 5 分钟同步 INI；IniShareSyncStatus
+每 1 分钟写本机状态。旧设备原有的开机任务会保留，动作会更新为无窗口 EXE。
+新建任务使用执行 setup_tasks.cmd 的账户。定时动作直接运行无黑窗
+EXE，不运行 CMD。出错请看本目录 logs；setup_tasks.cmd 失败不会删除旧任务。
 SCBGX 上的 E:\软件\飞针机-设备端 是发布包存放处，不是设备上的安装目录。
