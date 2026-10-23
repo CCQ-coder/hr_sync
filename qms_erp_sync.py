@@ -46,6 +46,9 @@ SOURCE_KEY_PREFIX = "ERP-EXCEL:"
 API_PATH = "/api/v1/integrations/work-orders"
 SNAPSHOT_API_PATH = "/api/v1/integrations/work-orders/snapshot"
 EXCEL_SUFFIXES = (".xls", ".xlsx")
+SUMMARY_ROW_LABELS = frozenset((
+    "合计", "总计", "汇总", "小计", "本页合计", "total", "subtotal", "grandtotal",
+))
 DATABASE_MODE_LABEL = "数据库直连（默认，不需要 Token）"
 API_MODE_LABEL = "QMS 接口（需要网关 Token）"
 AUTO_SYNC_DEFAULT_INTERVAL_MINUTES = 5
@@ -1278,6 +1281,26 @@ def raw_business_key(row: Mapping[str, Any], row_no: int) -> str:
     return f"行{row_no}"
 
 
+def without_trailing_summary_rows(
+    rows: Iterable[Tuple[int, Sequence[Any]]],
+) -> Iterable[Tuple[int, Sequence[Any]]]:
+    """Keep interior totals, but discard consecutive summary rows at sheet end."""
+    pending: List[Tuple[int, Sequence[Any]]] = []
+    for row in rows:
+        values = row[1]
+        first_value = next((value for value in values if not is_empty(value)), None)
+        if first_value is None:
+            continue
+        if isinstance(first_value, str) and (
+            re.sub(r"\s+", "", first_value).rstrip(":：").casefold() in SUMMARY_ROW_LABELS
+        ):
+            pending.append(row)
+            continue
+        yield from pending
+        pending.clear()
+        yield row
+
+
 def iter_all_source_records(
     config: Mapping[str, Any], callback: Callable[[str], None], stats: SourceScanStats,
     *, source_directory: Optional[Path] = None, selected_files: Optional[Sequence[Path]] = None,
@@ -1347,7 +1370,9 @@ def iter_all_source_records(
                     )
                     if headers_only:
                         continue
-                    for row_index, values_row in enumerate(values, start=2):
+                    for row_index, values_row in without_trailing_summary_rows(
+                        enumerate(values, start=2)
+                    ):
                         row = {
                             normalized_headers[index]: values_row[index] if index < len(values_row) else None
                             for index in range(len(normalized_headers)) if normalized_headers[index]
@@ -1401,11 +1426,14 @@ def iter_all_source_records(
                 )
                 if headers_only:
                     continue
-                for zero_based_row in range(1, sheet.nrows):
-                    values_row = [
+                xls_rows = (
+                    (row_index + 1, [
                         decode_erp_xls_cell(value, workbook.encoding, decode_warnings)
-                        for value in sheet.row_values(zero_based_row)
-                    ]
+                        for value in sheet.row_values(row_index)
+                    ])
+                    for row_index in range(1, sheet.nrows)
+                )
+                for row_index, values_row in without_trailing_summary_rows(xls_rows):
                     row = {
                         normalized_headers[index]: values_row[index] if index < len(values_row) else None
                         for index in range(len(normalized_headers)) if normalized_headers[index]
@@ -1413,7 +1441,7 @@ def iter_all_source_records(
                     raw_data = {
                         raw_headers[index]: xls_safe_cell(
                             values_row[index] if index < len(values_row) else None,
-                            sheet.cell_type(zero_based_row, index) if index < len(values_row) else xlrd.XL_CELL_EMPTY,
+                            sheet.cell_type(row_index - 1, index) if index < len(values_row) else xlrd.XL_CELL_EMPTY,
                             workbook.datemode,
                         )
                         for index in range(len(raw_headers))
@@ -1421,7 +1449,7 @@ def iter_all_source_records(
                     if all(is_empty(value) for value in raw_data.values()):
                         continue
                     yield from _source_record_pair(
-                        relative_file, sheet_name, zero_based_row + 1, row, raw_data,
+                        relative_file, sheet_name, row_index, row, raw_data,
                         workbook.datemode, is_work_order, stats, target_table, definitions,
                         source_location, source_row_ordinals,
                     )
