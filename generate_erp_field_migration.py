@@ -20,6 +20,10 @@ from qms_erp_sync import (
 )
 
 
+# These tables are new and created with English fields by the synchronizer.
+NEW_ENGLISH_ONLY_TABLES = frozenset({"qms_completion_quantity", "qms_scrap"})
+
+
 @dataclass(frozen=True)
 class RenameManifestRow:
     table_name: str
@@ -85,7 +89,7 @@ def build_rename_manifest(registry: ErpFieldRegistry) -> List[RenameManifestRow]
         f.excel_source_header, f.excel_unique_header, f.legacy_database_column,
         f.database_column, f.column_comment,
         migration_kind="split_source" if counts[(f.table_name, f.legacy_database_column)] > 1 else "change",
-    ) for f in registry.fields]
+    ) for f in registry.fields if f.table_name not in NEW_ENGLISH_ONLY_TABLES]
     return [r for r in _validate(rows) if r.old_field != r.new_field]
 
 

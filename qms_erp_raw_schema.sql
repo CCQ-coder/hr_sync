@@ -17,6 +17,8 @@
 -- qms_finished_goods_receipt       成品入库单资料
 -- qms_delivery_note                送货单资料
 -- qms_process_output_summary       各工段出数汇总资料
+-- qms_completion_quantity          完成数量资料
+-- qms_scrap                        报废
 --
 -- 生产指示资料直接写入 qms_work_order 和 qms_production_batch。
 -- 未识别的新 Excel 文件才会写入 qms_erp_unclassified。

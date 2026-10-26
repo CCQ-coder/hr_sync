@@ -10,7 +10,7 @@ SELECT VERSION() AS mysql_version, DATABASE() AS selected_database, @erp_migrati
 SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, COLUMN_TYPE, IS_NULLABLE,
        COLUMN_DEFAULT, EXTRA, COLUMN_COMMENT, CHARACTER_SET_NAME, COLLATION_NAME, GENERATION_EXPRESSION
 FROM information_schema.columns
-WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN ('qms_customer_order', 'qms_customer_part', 'qms_delivery_note', 'qms_engineering_data', 'qms_erp_unclassified', 'qms_finished_goods_receipt', 'qms_material', 'qms_material_issue', 'qms_material_receipt', 'qms_process_output_summary', 'qms_purchase_order', 'qms_work_order')
+WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN ('qms_customer_order', 'qms_customer_part', 'qms_delivery_note', 'qms_engineering_data', 'qms_finished_goods_receipt', 'qms_material', 'qms_material_issue', 'qms_material_receipt', 'qms_process_output_summary', 'qms_purchase_order', 'qms_work_order')
   AND LEFT(COLUMN_NAME, 4) = 'erp_'
 ORDER BY TABLE_NAME, ORDINAL_POSITION;
 
@@ -557,52 +557,6 @@ UNION ALL
 SELECT 'qms_engineering_data' AS table_name, 'erp_阻焊菲林编号' AS old_field, 'erp_solder_mask_film_no' AS new_field, 'Excel列名：阻焊菲林编号' AS comment, 'change' AS migration_kind
 UNION ALL
 SELECT 'qms_engineering_data' AS table_name, 'erp_首选排版方式' AS old_field, 'erp_preferred_panelization_method' AS new_field, 'Excel列名：首选排版方式' AS comment, 'change' AS migration_kind
-UNION ALL
-SELECT 'qms_erp_unclassified' AS table_name, 'erp_<因打X板>多报废数量' AS old_field, 'erp_due_to_crossed_board_excess_scrap_quantity' AS new_field, 'Excel列名：<因打X板> 多报废数量' AS comment, 'change' AS migration_kind
-UNION ALL
-SELECT 'qms_erp_unclassified' AS table_name, 'erp_厂内编号' AS old_field, 'erp_internal_product_no' AS new_field, 'Excel列名：厂内编号' AS comment, 'change' AS migration_kind
-UNION ALL
-SELECT 'qms_erp_unclassified' AS table_name, 'erp_原因' AS old_field, 'erp_reason' AS new_field, 'Excel列名：原因' AS comment, 'change' AS migration_kind
-UNION ALL
-SELECT 'qms_erp_unclassified' AS table_name, 'erp_原生产指令' AS old_field, 'erp_original_production_order' AS new_field, 'Excel列名：原生产指令' AS comment, 'change' AS migration_kind
-UNION ALL
-SELECT 'qms_erp_unclassified' AS table_name, 'erp_合拼厂内编号' AS old_field, 'erp_combined_panel_internal_product_no' AS new_field, 'Excel列名：合拼厂内编号' AS comment, 'change' AS migration_kind
-UNION ALL
-SELECT 'qms_erp_unclassified' AS table_name, 'erp_完成日期' AS old_field, 'erp_completion_date' AS new_field, 'Excel列名：完成日期' AS comment, 'change' AS migration_kind
-UNION ALL
-SELECT 'qms_erp_unclassified' AS table_name, 'erp_完成编号' AS old_field, 'erp_completion_no' AS new_field, 'Excel列名：完成编号' AS comment, 'change' AS migration_kind
-UNION ALL
-SELECT 'qms_erp_unclassified' AS table_name, 'erp_客户名称' AS old_field, 'erp_customer_name' AS new_field, 'Excel列名：客户名称' AS comment, 'change' AS migration_kind
-UNION ALL
-SELECT 'qms_erp_unclassified' AS table_name, 'erp_客户编号' AS old_field, 'erp_customer_code' AS new_field, 'Excel列名：客户编号' AS comment, 'change' AS migration_kind
-UNION ALL
-SELECT 'qms_erp_unclassified' AS table_name, 'erp_层数' AS old_field, 'erp_layer_count' AS new_field, 'Excel列名：层数' AS comment, 'change' AS migration_kind
-UNION ALL
-SELECT 'qms_erp_unclassified' AS table_name, 'erp_当前尺寸' AS old_field, 'erp_current_dimensions' AS new_field, 'Excel列名：当前尺寸' AS comment, 'change' AS migration_kind
-UNION ALL
-SELECT 'qms_erp_unclassified' AS table_name, 'erp_当前板宽' AS old_field, 'erp_current_board_width' AS new_field, 'Excel列名：当前板宽' AS comment, 'change' AS migration_kind
-UNION ALL
-SELECT 'qms_erp_unclassified' AS table_name, 'erp_当前板长' AS old_field, 'erp_current_board_length' AS new_field, 'Excel列名：当前板长' AS comment, 'change' AS migration_kind
-UNION ALL
-SELECT 'qms_erp_unclassified' AS table_name, 'erp_总面积_(成品面积)' AS old_field, 'erp_total_area_finished_goods_area' AS new_field, 'Excel列名：总面积 (成品面积)' AS comment, 'change' AS migration_kind
-UNION ALL
-SELECT 'qms_erp_unclassified' AS table_name, 'erp_报废数量' AS old_field, 'erp_scrap_quantity' AS new_field, 'Excel列名：报废数量' AS comment, 'change' AS migration_kind
-UNION ALL
-SELECT 'qms_erp_unclassified' AS table_name, 'erp_检查数量' AS old_field, 'erp_inspection_quantity' AS new_field, 'Excel列名：检查数量' AS comment, 'change' AS migration_kind
-UNION ALL
-SELECT 'qms_erp_unclassified' AS table_name, 'erp_流程工序' AS old_field, 'erp_workflow_process' AS new_field, 'Excel列名：流程工序' AS comment, 'change' AS migration_kind
-UNION ALL
-SELECT 'qms_erp_unclassified' AS table_name, 'erp_生产指令' AS old_field, 'erp_production_order' AS new_field, 'Excel列名：生产指令' AS comment, 'change' AS migration_kind
-UNION ALL
-SELECT 'qms_erp_unclassified' AS table_name, 'erp_生产类别' AS old_field, 'erp_production_category' AS new_field, 'Excel列名：生产类别' AS comment, 'change' AS migration_kind
-UNION ALL
-SELECT 'qms_erp_unclassified' AS table_name, 'erp_累计报废(出货单位)' AS old_field, 'erp_cumulative_scrap_shipment_unit' AS new_field, 'Excel列名：累计报废 (出货单位)' AS comment, 'change' AS migration_kind
-UNION ALL
-SELECT 'qms_erp_unclassified' AS table_name, 'erp_责任厂商' AS old_field, 'erp_responsible_supplier' AS new_field, 'Excel列名：责任厂商' AS comment, 'change' AS migration_kind
-UNION ALL
-SELECT 'qms_erp_unclassified' AS table_name, 'erp_部门名称' AS old_field, 'erp_department_name' AS new_field, 'Excel列名：部门名称' AS comment, 'change' AS migration_kind
-UNION ALL
-SELECT 'qms_erp_unclassified' AS table_name, 'erp_金额2(本位币)层数比例' AS old_field, 'erp_amount_2_local_currency_layer_count_ratio' AS new_field, 'Excel列名：金额2(本位币) 层数比例' AS comment, 'change' AS migration_kind
 UNION ALL
 SELECT 'qms_finished_goods_receipt' AS table_name, 'erp_PCS/箱' AS old_field, 'erp_pcs_carton' AS new_field, 'Excel列名：PCS/箱' AS comment, 'change' AS migration_kind
 UNION ALL

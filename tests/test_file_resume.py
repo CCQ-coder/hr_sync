@@ -111,7 +111,7 @@ class FileResumeTests(unittest.TestCase):
             self.assertTrue(all("qms_material" not in removed.get("raw", {})
                                 for removed in client.deactivated))
 
-    def test_overwritten_non_complete_export_deactivates_removed_rows(self):
+    def test_overwritten_exports_only_deactivate_missing_rows_when_authoritative(self):
         class Connection:
             def cursor(self):
                 return self
@@ -153,26 +153,30 @@ class FileResumeTests(unittest.TestCase):
                 yield sync.RawSourceRecord(
                     source_file=path.as_posix(), sheet_name="Test", source_row_no=2,
                     business_key=part, source_key=part, row_hash=part,
-                    field_values={}, source_table="qms_purchase_order", field_definitions={},
+                    field_values={}, source_table=table_name, field_definitions={},
                 ), None
 
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            source = root / "daily"
-            source.mkdir()
-            file = source / "采购订单资料.xls"
-            file.write_bytes(b"full")
-            config = {"skip_initialization": True, "incremental_directory": str(source)}
-            client = Client(config)
-            with patch.object(sync, "state_path", return_value=root / "state.json"), \
-                    patch.object(sync, "iter_all_source_records", side_effect=records), \
-                    patch.object(sync, "QmsDatabaseClient", return_value=client):
-                sync.save_state({sync.SOURCE_IDENTITY_VERSION_STATE_KEY: "5"})
-                sync.synchronize_database_directory(config, False, lambda _: None)
-                file.write_bytes(b"part")
-                sync.synchronize_database_directory(config, False, lambda _: None)
-            self.assertTrue(client.removed, "overwritten export must reconcile removed rows")
-            self.assertEqual({"qms_purchase_order": ["B"]}, client.removed[-1]["raw"])
+        for filename, table_name, expected in (
+            ("采购订单资料.xls", "qms_purchase_order", {"qms_purchase_order": ["B"]}),
+            ("完成数量资料.xls", "qms_completion_quantity", {}),
+            ("报废.xls", "qms_scrap", {}),
+        ):
+            with self.subTest(file=filename), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                source = root / "daily"
+                source.mkdir()
+                file = source / filename
+                file.write_bytes(b"full")
+                config = {"skip_initialization": True, "incremental_directory": str(source)}
+                client = Client(config)
+                with patch.object(sync, "state_path", return_value=root / "state.json"), \
+                        patch.object(sync, "iter_all_source_records", side_effect=records), \
+                        patch.object(sync, "QmsDatabaseClient", return_value=client):
+                    sync.save_state({sync.SOURCE_IDENTITY_VERSION_STATE_KEY: "5"})
+                    sync.synchronize_database_directory(config, False, lambda _: None)
+                    file.write_bytes(b"part")
+                    sync.synchronize_database_directory(config, False, lambda _: None)
+                self.assertEqual(expected, client.removed[-1]["raw"] if client.removed else {})
 
     def test_same_named_files_in_different_daily_roots_have_separate_checkpoints(self):
         with tempfile.TemporaryDirectory() as temporary:

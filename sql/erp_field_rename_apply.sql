@@ -285,31 +285,6 @@ ALTER TABLE `qms_engineering_data`
   CHANGE COLUMN `erp_阻焊菲林编号` `erp_solder_mask_film_no` LONGTEXT NULL COMMENT 'Excel列名：阻焊菲林编号',
   CHANGE COLUMN `erp_首选排版方式` `erp_preferred_panelization_method` LONGTEXT NULL COMMENT 'Excel列名：首选排版方式';
 
-ALTER TABLE `qms_erp_unclassified`
-  CHANGE COLUMN `erp_<因打X板>多报废数量` `erp_due_to_crossed_board_excess_scrap_quantity` LONGTEXT NULL COMMENT 'Excel列名：<因打X板> 多报废数量',
-  CHANGE COLUMN `erp_厂内编号` `erp_internal_product_no` LONGTEXT NULL COMMENT 'Excel列名：厂内编号',
-  CHANGE COLUMN `erp_原因` `erp_reason` LONGTEXT NULL COMMENT 'Excel列名：原因',
-  CHANGE COLUMN `erp_原生产指令` `erp_original_production_order` LONGTEXT NULL COMMENT 'Excel列名：原生产指令',
-  CHANGE COLUMN `erp_合拼厂内编号` `erp_combined_panel_internal_product_no` LONGTEXT NULL COMMENT 'Excel列名：合拼厂内编号',
-  CHANGE COLUMN `erp_完成日期` `erp_completion_date` LONGTEXT NULL COMMENT 'Excel列名：完成日期',
-  CHANGE COLUMN `erp_完成编号` `erp_completion_no` LONGTEXT NULL COMMENT 'Excel列名：完成编号',
-  CHANGE COLUMN `erp_客户名称` `erp_customer_name` LONGTEXT NULL COMMENT 'Excel列名：客户名称',
-  CHANGE COLUMN `erp_客户编号` `erp_customer_code` LONGTEXT NULL COMMENT 'Excel列名：客户编号',
-  CHANGE COLUMN `erp_层数` `erp_layer_count` LONGTEXT NULL COMMENT 'Excel列名：层数',
-  CHANGE COLUMN `erp_当前尺寸` `erp_current_dimensions` LONGTEXT NULL COMMENT 'Excel列名：当前尺寸',
-  CHANGE COLUMN `erp_当前板宽` `erp_current_board_width` LONGTEXT NULL COMMENT 'Excel列名：当前板宽',
-  CHANGE COLUMN `erp_当前板长` `erp_current_board_length` LONGTEXT NULL COMMENT 'Excel列名：当前板长',
-  CHANGE COLUMN `erp_总面积_(成品面积)` `erp_total_area_finished_goods_area` LONGTEXT NULL COMMENT 'Excel列名：总面积 (成品面积)',
-  CHANGE COLUMN `erp_报废数量` `erp_scrap_quantity` LONGTEXT NULL COMMENT 'Excel列名：报废数量',
-  CHANGE COLUMN `erp_检查数量` `erp_inspection_quantity` LONGTEXT NULL COMMENT 'Excel列名：检查数量',
-  CHANGE COLUMN `erp_流程工序` `erp_workflow_process` LONGTEXT NULL COMMENT 'Excel列名：流程工序',
-  CHANGE COLUMN `erp_生产指令` `erp_production_order` LONGTEXT NULL COMMENT 'Excel列名：生产指令',
-  CHANGE COLUMN `erp_生产类别` `erp_production_category` LONGTEXT NULL COMMENT 'Excel列名：生产类别',
-  CHANGE COLUMN `erp_累计报废(出货单位)` `erp_cumulative_scrap_shipment_unit` LONGTEXT NULL COMMENT 'Excel列名：累计报废 (出货单位)',
-  CHANGE COLUMN `erp_责任厂商` `erp_responsible_supplier` LONGTEXT NULL COMMENT 'Excel列名：责任厂商',
-  CHANGE COLUMN `erp_部门名称` `erp_department_name` LONGTEXT NULL COMMENT 'Excel列名：部门名称',
-  CHANGE COLUMN `erp_金额2(本位币)层数比例` `erp_amount_2_local_currency_layer_count_ratio` LONGTEXT NULL COMMENT 'Excel列名：金额2(本位币) 层数比例';
-
 ALTER TABLE `qms_finished_goods_receipt`
   CHANGE COLUMN `erp_PCS/箱` `erp_pcs_carton` LONGTEXT NULL COMMENT 'Excel列名：PCS/箱',
   CHANGE COLUMN `erp_\\结余面积` `erp_balance_area` LONGTEXT NULL COMMENT 'Excel列名：\\结余面积',
