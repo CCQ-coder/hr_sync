@@ -5,6 +5,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pymysql
@@ -85,13 +86,13 @@ class FileCheckpointTests(unittest.TestCase):
 
             def assert_select(self, statement, parameters):
                 assert "`tenant_code` = %s" in statement
-                assert "`source_key` LIKE 'ERP5:%'" in statement
+                assert "`source_key` LIKE 'ERP5:%%'" in statement
                 assert parameters == ("customer-b",)
 
             def assert_delete(self, statement, parameters):
                 assert statement.lstrip().startswith("DELETE FROM `qms_material`")
                 assert "`tenant_code` = %s" in statement
-                assert "`source_key` LIKE 'ERP5:%'" in statement
+                assert "`source_key` LIKE 'ERP5:%%'" in statement
 
             def fetchall(self):
                 return self.selected
@@ -106,6 +107,36 @@ class FileCheckpointTests(unittest.TestCase):
             ("customer-b", "ERP5:keep"), ("customer-b", "manual-entry"),
             ("customer-c", "ERP5:missing"),
         }, cursor.rows)
+
+    def test_complete_snapshot_sql_survives_pymysql_percent_formatting(self) -> None:
+        class Cursor:
+            def __init__(self):
+                self.formatter = pymysql.cursors.Cursor(
+                    SimpleNamespace(literal=lambda value: repr(value)),
+                )
+                self.statements = []
+                self.rowcount = 1
+
+            def execute(self, statement, parameters):
+                self.statements.append(self.formatter.mogrify(statement, parameters))
+
+            def fetchall(self):
+                return [("ERP5:keep",), ("ERP5:missing",)]
+
+        client = object.__new__(sync.QmsDatabaseClient)
+        client.tenant = "customer-b"
+        cursor = Cursor()
+        try:
+            deleted, keys = client._delete_missing_snapshot_rows(
+                cursor, "qms_material", {"ERP5:keep"},
+            )
+        except TypeError as exc:
+            self.fail(f"PyMySQL could not bind the snapshot query: {exc}")
+
+        self.assertEqual((1, {"ERP5:missing"}), (deleted, keys))
+        self.assertEqual(2, len(cursor.statements))
+        self.assertTrue(all("`source_key` LIKE 'ERP5:%'" in sql for sql in cursor.statements))
+        self.assertTrue(all("`tenant_code` = 'customer-b'" in sql for sql in cursor.statements))
 
     def test_same_named_exports_in_different_daily_roots_have_distinct_identity(self) -> None:
         class Registry:
