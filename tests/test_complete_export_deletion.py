@@ -5,6 +5,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from pymysql.converters import escape_item
+from pymysql.cursors import Cursor as MySQLCursor
+
 import qms_erp_sync as sync
 
 
@@ -194,13 +197,18 @@ class CompleteExportDeletionTests(unittest.TestCase):
             self.assertEqual({"ERP5:A"}, client.tables["qms_material"])
 
     def test_deletion_sql_is_tenant_scoped_and_ignores_non_erp_rows(self):
+        class FormatConnection:
+            def literal(self, value):
+                return escape_item(value, "utf8")
+
         class Cursor:
             def __init__(self):
                 self.calls = []
                 self.rowcount = 1
+                self.formatter = MySQLCursor(FormatConnection())
 
             def execute(self, statement, parameters):
-                self.calls.append((statement, parameters))
+                self.calls.append((self.formatter.mogrify(statement, parameters), parameters))
 
             def fetchall(self):
                 return [("ERP5:A",), ("ERP5:B",)]
@@ -214,7 +222,7 @@ class CompleteExportDeletionTests(unittest.TestCase):
         self.assertEqual(("tenant-a",), cursor.calls[0][1])
         self.assertIn("source_key` LIKE 'ERP5:%'", cursor.calls[0][0])
         self.assertIn("DELETE FROM `qms_material`", cursor.calls[1][0])
-        self.assertIn("`tenant_code` = %s", cursor.calls[1][0])
+        self.assertIn("`tenant_code` = 'tenant-a'", cursor.calls[1][0])
         self.assertEqual(("tenant-a", "ERP5:B"), cursor.calls[1][1])
         invalid_cursor = Cursor()
         with self.assertRaises(sync.SyncError):

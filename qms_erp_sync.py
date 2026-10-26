@@ -1979,7 +1979,7 @@ class QmsDatabaseClient:
         table = self._table_name(table_name)
         cursor.execute(
             f"SELECT `source_key` FROM {table} "
-            "WHERE `tenant_code` = %s AND `source_key` LIKE 'ERP5:%'",
+            "WHERE `tenant_code` = %s AND `source_key` LIKE 'ERP5:%%'",
             (self.tenant,),
         )
         missing = sorted({str(row[0]) for row in cursor.fetchall()} - set(current_keys))
@@ -1989,7 +1989,7 @@ class QmsDatabaseClient:
             placeholders = ", ".join(["%s"] * len(batch))
             cursor.execute(
                 f"DELETE FROM {table} WHERE `tenant_code` = %s "
-                f"AND `source_key` LIKE 'ERP5:%' AND `source_key` IN ({placeholders})",
+                f"AND `source_key` LIKE 'ERP5:%%' AND `source_key` IN ({placeholders})",
                 (self.tenant, *batch),
             )
             deleted += cursor.rowcount
