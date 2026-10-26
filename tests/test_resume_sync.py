@@ -14,6 +14,99 @@ import qms_erp_sync as sync
 
 
 class FileCheckpointTests(unittest.TestCase):
+    def test_upgrade_replays_latest_unchanged_complete_exports_once(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            baseline = root / "baseline"
+            daily = root / "daily"
+            baseline.mkdir()
+            daily.mkdir()
+            customer = baseline / "客户料号资料.xls"
+            material_old = baseline / "原料资料明细.xls"
+            material_new = daily / "2026-10-23" / "原料资料明细.xls"
+            receipt = daily / "2026-10-23" / "成品入库单资料.xls"
+            for path in (customer, material_old, material_new, receipt):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(path.as_posix().encode())
+            config = {
+                "initialization_directory": str(baseline),
+                "incremental_directory": str(daily),
+            }
+            _, checkpoints = sync.build_source_scan_plan(config, {})
+            previous = {**checkpoints, sync.SOURCE_IDENTITY_VERSION_STATE_KEY: "5"}
+            groups, _ = sync.build_source_scan_plan(config, previous)
+            self.assertEqual(
+                [("initialization", [customer]), ("incremental", [material_new, receipt])],
+                [(group.role, list(group.files)) for group in groups],
+            )
+            previous["complete-snapshot-version"] = "1"
+            groups, _ = sync.build_source_scan_plan(config, previous)
+            self.assertEqual([], groups)
+
+    def test_changed_older_initialization_snapshot_replays_latest_same_table(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            older = root / "2026-10-22" / "原料资料明细.xls"
+            latest = root / "2026-10-23" / "原料资料明细.xls"
+            for path in (older, latest):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"initial")
+            config = {"initialization_directory": str(root)}
+            _, checkpoints = sync.build_source_scan_plan(config, {})
+            previous = {
+                **checkpoints,
+                sync.SOURCE_IDENTITY_VERSION_STATE_KEY: "5",
+                "complete-snapshot-version": "1",
+            }
+            older.write_bytes(b"changed")
+            groups, _ = sync.build_source_scan_plan(config, previous)
+            self.assertEqual([older, latest], list(groups[0].files))
+
+    def test_complete_snapshot_hard_deletes_only_missing_current_tenant_erp_rows(self) -> None:
+        class Cursor:
+            def __init__(self):
+                self.rows = {
+                    ("customer-b", "ERP5:keep"), ("customer-b", "ERP5:missing"),
+                    ("customer-b", "manual-entry"), ("customer-c", "ERP5:missing"),
+                }
+                self.rowcount = 0
+                self.selected = []
+
+            def execute(self, statement, parameters):
+                if statement.lstrip().startswith("SELECT"):
+                    self.assert_select(statement, parameters)
+                    self.selected = [(key,) for tenant, key in self.rows
+                                     if tenant == parameters[0] and key.startswith("ERP5:")]
+                else:
+                    self.assert_delete(statement, parameters)
+                    before = len(self.rows)
+                    self.rows.difference_update({(parameters[0], key) for key in parameters[1:]})
+                    self.rowcount = before - len(self.rows)
+
+            def assert_select(self, statement, parameters):
+                assert "`tenant_code` = %s" in statement
+                assert "`source_key` LIKE 'ERP5:%'" in statement
+                assert parameters == ("customer-b",)
+
+            def assert_delete(self, statement, parameters):
+                assert statement.lstrip().startswith("DELETE FROM `qms_material`")
+                assert "`tenant_code` = %s" in statement
+                assert "`source_key` LIKE 'ERP5:%'" in statement
+
+            def fetchall(self):
+                return self.selected
+
+        client = object.__new__(sync.QmsDatabaseClient)
+        client.tenant = "customer-b"
+        cursor = Cursor()
+        count, deleted_keys = client._delete_missing_snapshot_rows(cursor, "qms_material", {"ERP5:keep"})
+        self.assertEqual(1, count)
+        self.assertEqual({"ERP5:missing"}, deleted_keys)
+        self.assertEqual({
+            ("customer-b", "ERP5:keep"), ("customer-b", "manual-entry"),
+            ("customer-c", "ERP5:missing"),
+        }, cursor.rows)
+
     def test_same_named_exports_in_different_daily_roots_have_distinct_identity(self) -> None:
         class Registry:
             def canonical_headers_for(self, _source_file, headers):
@@ -156,19 +249,19 @@ class FileCheckpointTests(unittest.TestCase):
         second_key = "source-file:incremental:2026-10-20/two.xls"
         state = {
             sync.file_membership_state_key(first_key): json.dumps({
-                "raw": {"qms_material": ["old", "shared"]},
+                "raw": {"qms_purchase_order": ["old", "shared"]},
                 "work_orders": ["ERP-EXCEL:old", "ERP-EXCEL:shared"],
                 "batches": ["old-batch", "shared-batch"],
             }),
             sync.file_membership_state_key(second_key): json.dumps({
-                "raw": {"qms_material": ["shared"]},
+                "raw": {"qms_purchase_order": ["shared"]},
                 "work_orders": ["ERP-EXCEL:shared"],
                 "batches": ["shared-batch"],
             }),
         }
-        current = {"raw": {"qms_material": []}, "work_orders": [], "batches": []}
+        current = {"raw": {"qms_purchase_order": []}, "work_orders": [], "batches": []}
         self.assertEqual({
-            "raw": {"qms_material": ["old"]},
+            "raw": {"qms_purchase_order": ["old"]},
             "work_orders": ["ERP-EXCEL:old"],
             "batches": ["old-batch"],
         }, sync.removed_file_membership(state, first_key, current))
@@ -187,7 +280,7 @@ class FileCheckpointTests(unittest.TestCase):
         client.tenant = "customer-b"
         cursor = Cursor()
         count = client._deactivate_removed_file_records(cursor, {
-            "raw": {"qms_material": ["old"]},
+            "raw": {"qms_purchase_order": ["old"]},
             "work_orders": ["ERP-EXCEL:old"],
             "batches": ["old-batch"],
         })
@@ -295,6 +388,208 @@ class FileCheckpointTests(unittest.TestCase):
 
 
 class ResumeTests(unittest.TestCase):
+    def test_complete_export_deletes_missing_rows_before_commit_and_marks_upgrade(self) -> None:
+        events = []
+
+        class Connection:
+            def cursor(self):
+                return self
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def commit(self):
+                events.append("commit")
+
+            def close(self):
+                pass
+
+        class Client:
+            def _connect(self):
+                return Connection()
+
+            def _upsert_source_records(self, _cursor, _table, records):
+                events.append(("upsert", [record.source_key for record in records]))
+
+            def _delete_missing_snapshot_rows(self, _cursor, table, keys):
+                events.append(("delete", table, set(keys)))
+                return 2, {"ERP5:old"}
+
+            def _deactivate_removed_file_records(self, _cursor, _removed):
+                return 0
+
+        def records(_config, _callback, stats, *, source_directory, selected_files):
+            stats.files_scanned += 1
+            stats.raw_records += 1
+            key = selected_files[0].read_text()
+            yield sync.RawSourceRecord(
+                source_file=selected_files[0].as_posix(), sheet_name="Test", source_row_no=2,
+                business_key=key, source_key=f"ERP5:{key}", row_hash=key, field_values={},
+                source_table="qms_material", field_definitions={},
+            ), None
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            daily = root / "daily"
+            daily.mkdir()
+            for day, value in (("2026-10-22", "old"), ("2026-10-23", "new")):
+                folder = daily / day
+                folder.mkdir()
+                (folder / "原料资料明细.xls").write_text(value)
+            config = {"skip_initialization": True, "incremental_directory": str(daily)}
+            with patch.object(sync, "state_path", return_value=root / "state.json"), \
+                    patch.object(sync, "iter_all_source_records", side_effect=records), \
+                    patch.object(sync, "QmsDatabaseClient", return_value=Client()):
+                sync.save_state({sync.SOURCE_IDENTITY_VERSION_STATE_KEY: "5"})
+                result = sync.synchronize_database_directory(config, False, lambda _: None)
+                state = sync.load_state()
+            self.assertEqual([
+                ("upsert", ["ERP5:old"]),
+                "commit",
+                ("upsert", ["ERP5:new"]),
+                ("delete", "qms_material", {"ERP5:new"}),
+                "commit",
+            ], events)
+            self.assertEqual(2, result.deleted)
+            self.assertEqual("1", state["complete-snapshot-version"])
+            self.assertNotIn("raw:ERP5:old", state)
+            self.assertEqual("new", state["raw:ERP5:new"])
+
+    def test_empty_complete_export_aborts_without_commit_or_delete(self) -> None:
+        events = []
+
+        class Connection:
+            def cursor(self):
+                return self
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def commit(self):
+                events.append("commit")
+
+            def rollback(self):
+                events.append("rollback")
+
+            def close(self):
+                pass
+
+        class Client:
+            def _connect(self):
+                return Connection()
+
+            def _delete_missing_snapshot_rows(self, *_args):
+                events.append("delete")
+                return 0, set()
+
+            def _deactivate_removed_file_records(self, *_args):
+                return 0
+
+        def no_records(_config, _callback, stats, *, source_directory, selected_files):
+            stats.files_scanned += 1
+            return iter(())
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            daily = root / "daily"
+            daily.mkdir()
+            (daily / "原料资料明细.xls").write_bytes(b"empty")
+            config = {"skip_initialization": True, "incremental_directory": str(daily)}
+            with patch.object(sync, "state_path", return_value=root / "state.json"), \
+                    patch.object(sync, "iter_all_source_records", side_effect=no_records), \
+                    patch.object(sync, "QmsDatabaseClient", return_value=Client()):
+                sync.save_state({sync.SOURCE_IDENTITY_VERSION_STATE_KEY: "5"})
+                with self.assertRaisesRegex(sync.SyncError, "完整导出.*没有有效数据"):
+                    sync.synchronize_database_directory(config, False, lambda _: None)
+                self.assertNotIn("complete-snapshot-version", sync.load_state())
+            self.assertEqual(["rollback"], events)
+
+    def test_failed_latest_snapshot_is_replayed_after_older_file_commits(self) -> None:
+        events = []
+
+        class Connection:
+            def cursor(self):
+                return self
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def commit(self):
+                events.append("commit")
+
+            def rollback(self):
+                events.append("rollback")
+
+            def close(self):
+                pass
+
+        class Client:
+            fail_latest = True
+
+            def _connect(self):
+                return Connection()
+
+            def _upsert_source_records(self, _cursor, _table, rows):
+                if rows[0].source_key == "ERP5:new" and self.fail_latest:
+                    raise sync.SyncError("newer failed")
+                events.append(("upsert", rows[0].source_key))
+
+            def _delete_missing_snapshot_rows(self, _cursor, _table, keys):
+                events.append(("delete", set(keys)))
+                return 0, set()
+
+            def _deactivate_removed_file_records(self, *_args):
+                return 0
+
+        def records(_config, _callback, stats, *, source_directory, selected_files):
+            stats.files_scanned += 1
+            stats.raw_records += 1
+            value = selected_files[0].read_text()
+            yield sync.RawSourceRecord(
+                source_file=selected_files[0].as_posix(), sheet_name="Test", source_row_no=2,
+                business_key=value, source_key=f"ERP5:{value}", row_hash=value,
+                field_values={}, source_table="qms_material", field_definitions={},
+            ), None
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            older = root / "2026-10-22" / "原料资料明细.xls"
+            latest = root / "2026-10-23" / "原料资料明细.xls"
+            for path, value in ((older, "old"), (latest, "new")):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(value)
+            config = {"initialization_directory": str(root)}
+            _, checkpoints = sync.build_source_scan_plan(config, {})
+            client = Client()
+            with patch.object(sync, "state_path", return_value=root / "state.json"), \
+                    patch.object(sync, "iter_all_source_records", side_effect=records), \
+                    patch.object(sync, "QmsDatabaseClient", return_value=client):
+                sync.save_state({
+                    **checkpoints, sync.SOURCE_IDENTITY_VERSION_STATE_KEY: "5",
+                    "complete-snapshot-version": "1",
+                })
+                older.write_text("changed")
+                with self.assertRaisesRegex(sync.SyncError, "newer failed"):
+                    sync.synchronize_database_directory(config, False, lambda _: None)
+                self.assertEqual([("upsert", "ERP5:changed"), "commit", "rollback"], events)
+                state = sync.load_state()
+                self.assertEqual("pending", state["complete-snapshot-version"])
+                groups, _ = sync.build_source_scan_plan(config, state)
+                self.assertEqual([latest], list(groups[0].files))
+                client.fail_latest = False
+                sync.synchronize_database_directory(config, False, lambda _: None)
+                self.assertEqual("1", sync.load_state()["complete-snapshot-version"])
+            self.assertEqual(("delete", {"ERP5:new"}), events[-2])
+
     def test_file_sync_retains_equal_customer_order_details_without_reconciliation(self) -> None:
         class Connection:
             def cursor(self):
@@ -473,14 +768,14 @@ class ResumeTests(unittest.TestCase):
                 yield sync.RawSourceRecord(
                     source_file=path.name, sheet_name="Sheet1", source_row_no=number + 1,
                     business_key=str(number), source_key=f"raw{number}", row_hash=f"hash{number}",
-                    field_values={}, source_table="qms_material", field_definitions={},
+                    field_values={}, source_table="qms_purchase_order", field_definitions={},
                 ), {"sourceKey": f"ERP-EXCEL:{number}", "workOrderNo": str(number), "batchNo": f"B{number}"}
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / "source"
             source.mkdir()
-            workbook = source / "today.xls"
+            workbook = source / "采购订单资料.xls"
             workbook.write_bytes(b"first")
             config = {"skip_initialization": True, "incremental_directory": str(source)}
             client = FakeClient()
@@ -493,7 +788,7 @@ class ResumeTests(unittest.TestCase):
                 result = sync.synchronize_database_directory(config, False, lambda _: None)
             self.assertEqual(3, result.deactivated)
             self.assertEqual({
-                "raw": {"qms_material": ["raw2"]},
+                "raw": {"qms_purchase_order": ["raw2"]},
                 "work_orders": ["ERP-EXCEL:2"],
                 "batches": ["B2"],
             }, client.removed[-1])

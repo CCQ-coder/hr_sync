@@ -316,6 +316,80 @@ class InitializationTests(unittest.TestCase):
             save_state.assert_not_called()
             save_progress.assert_not_called()
 
+    def test_rebuild_replaces_older_complete_export_with_latest_in_one_transaction(self):
+        events = []
+
+        class Connection:
+            def cursor(self):
+                return self
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def commit(self):
+                events.append("commit")
+
+            def close(self):
+                pass
+
+        class Client:
+            def __init__(self, _config):
+                pass
+
+            def _connect(self):
+                return Connection()
+
+            def _ensure_source_table_schema(self, *_args):
+                events.append("schema")
+
+            def _clear_target_tables(self, _cursor):
+                events.append("clear")
+
+            def _upsert_source_records(self, _cursor, _table, rows, **_kwargs):
+                events.append(("upsert", rows[0].source_key))
+
+            def _delete_missing_snapshot_rows(self, _cursor, table, keys):
+                events.append(("delete", table, set(keys)))
+                return 0, set()
+
+        def records(_config, _callback, stats, *, source_directory, selected_files,
+                    headers_only=False, on_sheet=None):
+            stats.files_scanned += 1
+            if headers_only:
+                on_sheet("qms_material", {})
+                return
+            stats.raw_records += 1
+            key = selected_files[0].read_text()
+            yield sync.RawSourceRecord(
+                source_file=selected_files[0].as_posix(), sheet_name="Test", source_row_no=2,
+                business_key=key, source_key=f"ERP5:{key}", row_hash=key,
+                field_values={}, source_table="qms_material", field_definitions={},
+            ), None
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            baseline = root / "baseline"
+            for day, value in (("2026-10-22", "old"), ("2026-10-23", "new")):
+                folder = baseline / day
+                folder.mkdir(parents=True)
+                (folder / "原料资料明细.xls").write_text(value)
+            config = {"initialization_directory": str(baseline)}
+            with patch.object(sync, "state_path", return_value=root / "state.json"), \
+                    patch.object(sync, "QmsDatabaseClient", Client), \
+                    patch.object(sync, "iter_all_source_records", side_effect=records):
+                sync.synchronize_database_directory(config, False, lambda _: None, initialize=True)
+                state = sync.load_state()
+            self.assertEqual([
+                "schema", "commit", "clear",
+                ("upsert", "ERP5:old"),
+                ("upsert", "ERP5:new"), ("delete", "qms_material", {"ERP5:new"}),
+                "commit",
+            ], events)
+            self.assertEqual("1", state["complete-snapshot-version"])
+
 
 if __name__ == "__main__":
     unittest.main()
