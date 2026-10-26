@@ -71,6 +71,8 @@ BUSINESS_SOURCE_TABLE_BY_FILE: Sequence[Tuple[str, str]] = (
     ("成品入库单资料", "qms_finished_goods_receipt"),
     ("送货单资料", "qms_delivery_note"),
     ("各工段出数汇总资料", "qms_process_output_summary"),
+    ("完成数量资料", "qms_completion_quantity"),
+    ("报废", "qms_scrap"),
 )
 UNCLASSIFIED_SOURCE_TABLE = "qms_erp_unclassified"
 BUSINESS_SOURCE_TABLES = frozenset(
@@ -79,6 +81,7 @@ BUSINESS_SOURCE_TABLES = frozenset(
 COMPLETE_SNAPSHOT_TABLES = frozenset({
     "qms_customer_part", "qms_material", "qms_finished_goods_receipt",
 })
+PARTIAL_EXPORT_TABLES = frozenset({"qms_completion_quantity", "qms_scrap"})
 
 # Use ERP identifiers rather than the export's file, row, headers or mutable amounts.
 # Each inner tuple is an alternative identity, in preference order.
@@ -92,6 +95,8 @@ ERP_ROW_IDENTITIES: Mapping[str, Tuple[Tuple[str, ...], ...]] = {
     "qms_material_issue": (("erp_material_issue_detail_id",), ("erp_material_issue_id", "erp_material_no_id"), ("erp_material_issue_no", "erp_material_no_source_3b3dc2fa70"), ("erp_material_issue_no", "erp_material_no_source_3d14d54480"), ("erp_material_issue_no",)),
     "qms_finished_goods_receipt": (("erp_receipt_id_m",), ("erp_combined_panel_detail_id",), ("erp_receipt_no", "erp_carton_no", "erp_internal_product_no"), ("erp_receipt_no", "erp_internal_product_no"), ("erp_receipt_no",)),
     "qms_delivery_note": (("erp_delivery_note_no", "erp_internal_product_no", "erp_order_no", "erp_production_order_no"), ("erp_delivery_note_no", "erp_internal_product_no", "erp_order_no"), ("erp_delivery_note_no", "erp_internal_product_no", "erp_production_order_no"), ("erp_delivery_note_no", "erp_internal_product_no"), ("erp_delivery_note_no",)),
+    "qms_completion_quantity": (("erp_barcode", "erp_completion_date_with_time"), ("erp_barcode",)),
+    "qms_scrap": (("erp_completion_no", "erp_internal_product_no"), ("erp_completion_no",)),
     "qms_work_order": (("erp_production_order_no",),),
 }
 
@@ -1301,8 +1306,8 @@ def raw_business_key(row: Mapping[str, Any], row_no: int) -> str:
     """A readable, stable-enough source identifier; row number guarantees uniqueness."""
     candidates = (
         "生产指令号", "生产通知单号", "客户订单号", "订单编号", "采购订单号",
-        "送货单号", "入库单号", "出库单号", "单据编号", "单号", "厂内编号",
-        "客户料号", "料号", "物料编号", "板材编号",
+        "送货单号", "入库单号", "出库单号", "单据编号", "单号", "完成编号",
+        "条形码", "厂内编号", "客户料号", "料号", "物料编号", "板材编号",
     )
     for header in candidates:
         value = as_text(row.get(normalize_header(header)))
@@ -1516,10 +1521,18 @@ def _source_record_pair(
         field.database_column: database_cell_value(value)
         for field, value in zip(definitions, raw_data.values())
     }
-    row_document = json.dumps(field_values or raw_data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     table_name = source_table or "qms_work_order"
+    if table_name == "qms_completion_quantity" and not field_values.get("erp_barcode"):
+        if field_values.get("erp_production_order") or field_values.get("erp_internal_product_no"):
+            raise SyncError(f"{relative_file} / {sheet_name} 第 {row_no} 行缺少条形码。")
+        return
+    if table_name == "qms_scrap" and not field_values.get("erp_completion_no"):
+        if field_values.get("erp_internal_product_no"):
+            raise SyncError(f"{relative_file} / {sheet_name} 第 {row_no} 行缺少完成编号。")
+        return
+    row_document = json.dumps(field_values or raw_data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     identity = f"{table_name}\x1f{erp_row_identity(table_name, field_values or raw_data)}"
-    if table_name in ("qms_customer_order", "qms_delivery_note"):
+    if table_name in ("qms_customer_order", "qms_delivery_note", "qms_completion_quantity", "qms_scrap"):
         ordinals = source_row_ordinals if source_row_ordinals is not None else {}
         ordinal = ordinals.get(identity, 0) + 1
         ordinals[identity] = ordinal
@@ -2491,7 +2504,7 @@ def synchronize_database_directory(
                             raise SyncError(f"源文件处理期间发生覆盖：{relative_file}；请重试。")
                         removed = removed_file_membership(next_state, file_key, membership)
                         table = source_table_name(path.name, "", False)
-                        if table in COMPLETE_SNAPSHOT_TABLES:
+                        if table in COMPLETE_SNAPSHOT_TABLES | PARTIAL_EXPORT_TABLES:
                             removed["raw"].pop(table, None)
                         if last_complete_file.get(table) == (group.role, path):
                             deleted_for_file, deleted_keys_for_file = client._delete_missing_snapshot_rows(

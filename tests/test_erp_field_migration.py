@@ -86,6 +86,14 @@ class ErpFieldMigrationTests(unittest.TestCase):
         rows = self.migration.build_rename_manifest(ErpFieldRegistry([unchanged, self.field()]))
         self.assertEqual(rows, [self.row])
 
+    def test_new_english_only_tables_do_not_require_legacy_column_migration(self):
+        registry = ErpFieldRegistry([
+            self.field(),
+            self.field(table_name="qms_completion_quantity", source_file="完成数量资料.xls.xls"),
+            self.field(table_name="qms_scrap", source_file="报废.xls.xls"),
+        ])
+        self.assertEqual(self.migration.build_rename_manifest(registry), [self.row])
+
     def test_shared_old_column_expands_backfills_by_exact_scope_then_contracts_separately(self):
         registry = ErpFieldRegistry([
             self.field(), self.field(source_file="另一文件.xls", database_column="erp_processing_method_other"),

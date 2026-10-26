@@ -79,13 +79,15 @@ def _validate(manifest):
 def build_rename_manifest(registry: ErpFieldRegistry) -> List[RenameManifestRow]:
     # Revalidate public registry.fields before consuming them.
     registry = ErpFieldRegistry(registry.fields)
-    counts = Counter((f.table_name, f.legacy_database_column) for f in registry.fields)
+    # These tables start with English columns; no old Chinese columns exist to rename.
+    fields = [f for f in registry.fields if f.table_name not in {"qms_completion_quantity", "qms_scrap"}]
+    counts = Counter((f.table_name, f.legacy_database_column) for f in fields)
     rows = [RenameManifestRow(
         f.table_name, f.source_file, f.sheet_name, f.column_index,
         f.excel_source_header, f.excel_unique_header, f.legacy_database_column,
         f.database_column, f.column_comment,
         migration_kind="split_source" if counts[(f.table_name, f.legacy_database_column)] > 1 else "change",
-    ) for f in registry.fields]
+    ) for f in fields]
     return [r for r in _validate(rows) if r.old_field != r.new_field]
 
 
