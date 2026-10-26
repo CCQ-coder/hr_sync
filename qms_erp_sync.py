@@ -42,6 +42,8 @@ CONFIG_FILE_NAME = "qms_erp_sync_config.json"
 STATE_FILE_NAME = "qms_erp_sync_state.json"
 BASELINE_REPLAY_STATE_KEY = "baseline-replay-pending"
 SOURCE_IDENTITY_VERSION_STATE_KEY = "source-identity-version"
+FULL_SNAPSHOT_DELETE_STATE_KEY = "full-snapshot-delete-version"
+FULL_SNAPSHOT_DELETE_VERSION = "zsh-1"
 LOG_DIR_NAME = "logs"
 SOURCE_KEY_PREFIX = "ERP-EXCEL:"
 API_PATH = "/api/v1/integrations/work-orders"
@@ -92,6 +94,9 @@ UNCLASSIFIED_SOURCE_TABLE = "qms_erp_unclassified"
 BUSINESS_SOURCE_TABLES = frozenset(
     [destination for _, destination in BUSINESS_SOURCE_TABLE_BY_FILE] + [UNCLASSIFIED_SOURCE_TABLE]
 )
+COMPLETE_EXPORT_TABLES = frozenset({
+    "qms_customer_part", "qms_material", "qms_finished_goods_receipt",
+})
 
 # Use ERP identifiers rather than the export's file, row, headers or mutable amounts.
 # Each inner tuple is an alternative identity, in preference order.
@@ -295,6 +300,7 @@ class SyncSummary:
     source_tables: int = 0
     raw_written: int = 0
     work_orders_written: int = 0
+    deleted: int = 0
 
 
 @dataclass(frozen=True)
@@ -736,11 +742,13 @@ def removed_source_membership(
 
 def build_source_scan_plan(
     config: Mapping[str, Any], previous: Mapping[str, str], *, force_all: bool = False,
+    force_latest_complete_exports: bool = False,
 ) -> Tuple[List[SourceScanGroup], Dict[str, str]]:
     """Select only new/changed files, replaying deltas after a baseline change."""
     initialization, incremental, skip_initialization = configured_source_directories(config)
     groups: List[SourceScanGroup] = []
     checkpoints: Dict[str, str] = {}
+    source_groups: List[Tuple[str, Path, List[Path]]] = []
     initialization_changed = False
 
     if not skip_initialization:
@@ -748,6 +756,7 @@ def build_source_scan_plan(
             raise SyncError("请选择初始化数据目录，或勾选“跳过初始化”。")
         root = Path(initialization).expanduser()
         all_files = candidate_files(root)
+        source_groups.append(("initialization", root, all_files))
         if not all_files:
             raise SyncError(f"初始化数据目录中没有 Excel 文件：{root}")
         changed = []
@@ -764,6 +773,7 @@ def build_source_scan_plan(
     if incremental:
         root = Path(incremental).expanduser()
         all_files = candidate_files(root)
+        source_groups.append(("incremental", root, all_files))
         replay_from = 0 if (force_all or initialization_changed
                             or previous.get(BASELINE_REPLAY_STATE_KEY) == "1") else None
         for index, path in enumerate(all_files):
@@ -776,6 +786,25 @@ def build_source_scan_plan(
             groups.append(SourceScanGroup("incremental", root, tuple(all_files[replay_from:])))
     elif skip_initialization:
         raise SyncError("已勾选“跳过初始化”，请选择增量同步目录。")
+
+    latest: Dict[str, Tuple[str, Path]] = {}
+    for role, _root, files in source_groups:
+        for path in files:
+            table = complete_export_table(path)
+            if table:
+                latest[table] = (role, path)
+    selected = {group.role: set(group.files) for group in groups}
+    selected_tables = {
+        complete_export_table(path) for group in groups for path in group.files
+    }
+    if force_latest_complete_exports or selected_tables:
+        for table, (role, path) in latest.items():
+            if force_latest_complete_exports or table in selected_tables:
+                selected.setdefault(role, set()).add(path)
+        groups = [
+            SourceScanGroup(role, root, tuple(path for path in files if path in selected.get(role, set())))
+            for role, root, files in source_groups if selected.get(role)
+        ]
 
     return groups, checkpoints
 
@@ -1249,6 +1278,11 @@ def source_table_name(source_file: str, _sheet_name: str, is_work_order: bool) -
         if marker.casefold() in file_name:
             return destination
     return UNCLASSIFIED_SOURCE_TABLE
+
+
+def complete_export_table(path: Path) -> Optional[str]:
+    table = source_table_name(path.name, "", False)
+    return table if table in COMPLETE_EXPORT_TABLES else None
 
 
 def is_work_order_sheet(headers: Sequence[Any]) -> bool:
@@ -1934,6 +1968,33 @@ class QmsDatabaseClient:
         if dependents:
             raise SyncError("有范围外的表引用目标表，初始化可能级联删除：" + ", ".join(dependents))
 
+    def _delete_missing_snapshot_rows(
+        self, cursor, table_name: str, current_keys: Sequence[str],
+    ) -> Tuple[int, List[str]]:
+        """Delete this tenant's ERP rows absent from one complete export."""
+        if table_name not in COMPLETE_EXPORT_TABLES or not current_keys or any(
+            not key.startswith("ERP5:") for key in current_keys
+        ):
+            raise SyncError(f"完整导出 {table_name} 没有有效数据，已停止删除。")
+        table = self._table_name(table_name)
+        cursor.execute(
+            f"SELECT `source_key` FROM {table} "
+            "WHERE `tenant_code` = %s AND `source_key` LIKE 'ERP5:%'",
+            (self.tenant,),
+        )
+        missing = sorted({str(row[0]) for row in cursor.fetchall()} - set(current_keys))
+        deleted = 0
+        for offset in range(0, len(missing), 500):
+            batch = missing[offset:offset + 500]
+            placeholders = ", ".join(["%s"] * len(batch))
+            cursor.execute(
+                f"DELETE FROM {table} WHERE `tenant_code` = %s "
+                f"AND `source_key` LIKE 'ERP5:%' AND `source_key` IN ({placeholders})",
+                (self.tenant, *batch),
+            )
+            deleted += cursor.rowcount
+        return deleted, missing
+
     def _deactivate_removed_file_records(self, cursor, removed: Mapping[str, Any]) -> int:
         """Deactivate keys formerly owned by an overwritten export."""
         total = 0
@@ -2252,11 +2313,22 @@ def synchronize_database_directory(
         raise SyncError("来源键规则已更新；请先使用“清空并重新初始化”重建数据和断点。")
     previous = loaded_state
     next_state: Dict[str, str] = dict(previous)
-    scan_groups, checkpoints = build_source_scan_plan(config, previous, force_all=initialize)
+    scan_groups, checkpoints = build_source_scan_plan(
+        config, previous, force_all=initialize,
+        force_latest_complete_exports=(
+            not initialize and previous.get(FULL_SNAPSHOT_DELETE_STATE_KEY) != FULL_SNAPSHOT_DELETE_VERSION
+        ),
+    )
+    last_complete_file: Dict[str, Tuple[str, Path]] = {}
+    for group in scan_groups:
+        for path in group.files:
+            table = complete_export_table(path)
+            if table:
+                last_complete_file[table] = (group.role, path)
     initialization, incremental, _ = configured_source_directories(config)
     source_description = f"初始化={initialization or '已跳过'}；增量={incremental or '未配置'}"
     stats = SourceScanStats()
-    added = updated = unchanged = written_raw = written_work_orders = deactivated = 0
+    added = updated = unchanged = written_raw = written_work_orders = deactivated = deleted = 0
     work_order_hashes: Dict[str, str] = {}
     work_order_sources: Dict[str, str] = {}
     source_tables: set[str] = set()
@@ -2363,6 +2435,9 @@ def synchronize_database_directory(
             if stats.raw_records % 5000 == 0:
                 callback(f"已读取 {stats.raw_records:,} 条 ERP 原始记录…")
         flush_raw_records()
+        complete_table = complete_export_table(path)
+        if complete_table and not raw_keys.get(complete_table):
+            raise SyncError(f"完整导出 {relative_file} 没有有效数据，已停止删除。")
         membership = {
             "raw": {table: sorted(keys) for table, keys in raw_keys.items()},
             "work_orders": sorted(order_keys),
@@ -2414,11 +2489,21 @@ def synchronize_database_directory(
                         file_state, membership = process_file(group, path, cursor)
                         if source_file_checkpoint(path) != checked_files[str(path)]:
                             raise SyncError(f"源文件处理期间发生覆盖：{path}；数据库清理和导入已回滚。")
+                        complete_table = complete_export_table(path)
+                        deleted_for_file, deleted_keys = (
+                            client._delete_missing_snapshot_rows(
+                                cursor, complete_table, membership["raw"].get(complete_table, []),
+                            ) if complete_table and last_complete_file[complete_table] == (group.role, path)
+                            else (0, [])
+                        )
+                        deleted += deleted_for_file
                         file_state[file_key] = checked_files[str(path)]
                         file_state[file_membership_state_key(file_key)] = json.dumps(
                             membership, ensure_ascii=False, separators=(",", ":"),
                         )
                         next_state.update(file_state)
+                        for source_key in deleted_keys:
+                            next_state.pop(f"raw:{source_key}", None)
             connection.commit()
         except Exception as exc:
             connection.rollback()
@@ -2453,9 +2538,16 @@ def synchronize_database_directory(
                         file_state, membership = process_file(group, path, cursor)
                         if source_file_checkpoint(path) != checkpoint:
                             raise SyncError(f"源文件处理期间发生覆盖：{relative_file}；请重试。")
+                        complete_table = complete_export_table(path)
+                        deleted_for_file, deleted_keys = (
+                            client._delete_missing_snapshot_rows(
+                                cursor, complete_table, membership["raw"].get(complete_table, []),
+                            ) if complete_table and last_complete_file[complete_table] == (group.role, path)
+                            else (0, [])
+                        )
                         removed = removed_file_membership(next_state, file_key, membership)
-                        # Material exports may be partial; absence does not remove a material.
-                        removed["raw"].pop("qms_material", None)
+                        for table_name in COMPLETE_EXPORT_TABLES:
+                            removed["raw"].pop(table_name, None)
                         deactivated_for_file = (
                             client._deactivate_removed_file_records(cursor, removed)
                             if any(removed["raw"].values()) or removed["work_orders"] or removed["batches"]
@@ -2481,6 +2573,8 @@ def synchronize_database_directory(
                     pass
             file_state[file_key] = checkpoint
             file_state[SOURCE_IDENTITY_VERSION_STATE_KEY] = "5"
+            if complete_table and last_complete_file[complete_table] != (group.role, path):
+                file_state[FULL_SNAPSHOT_DELETE_STATE_KEY] = "pending"
             if (group.role == "initialization" and any(
                 planned.role == "incremental" for planned in scan_groups
             )) or (group.role == "incremental" and any(
@@ -2500,7 +2594,12 @@ def synchronize_database_directory(
                     f"{relative_file} 已提交到数据库，但本机断点保存失败；请修复磁盘权限后重新同步。"
                 ) from exc
             next_state.update(file_state)
+            for source_key in deleted_keys:
+                next_state.pop(f"raw:{source_key}", None)
             deactivated += deactivated_for_file
+            deleted += deleted_for_file
+            if deleted_for_file:
+                callback(f"完整导出已删除 {deleted_for_file:,} 条旧记录：{relative_file}。")
             callback(f"已提交并保存断点：{relative_file}。")
 
     work_order_added = work_order_updated = 0
@@ -2517,6 +2616,7 @@ def synchronize_database_directory(
     else:
         if any(group.role == "incremental" for group in scan_groups):
             next_state[BASELINE_REPLAY_STATE_KEY] = "0"
+        next_state[FULL_SNAPSHOT_DELETE_STATE_KEY] = FULL_SNAPSHOT_DELETE_VERSION
         try:
             save_state(next_state)
         except OSError as exc:
@@ -2526,7 +2626,7 @@ def synchronize_database_directory(
 
     summary = SyncSummary(
         source_file=source_description, rows_read=stats.raw_records, added=added, updated=updated,
-        unchanged=unchanged, deactivated=deactivated, dry_run=dry_run,
+        unchanged=unchanged, deactivated=deactivated, dry_run=dry_run, deleted=deleted,
         source_files=stats.files_scanned, raw_records=stats.raw_records, work_orders=stats.work_order_records,
         source_tables=len(source_tables), raw_written=written_raw, work_orders_written=written_work_orders,
     )
@@ -2534,7 +2634,7 @@ def synchronize_database_directory(
         f"同步{'预演' if dry_run else '完成'}：{source_description}，文件={stats.files_scanned}，"
         f"工作表={stats.sheets_scanned}，源表={len(source_tables)}，原始记录={stats.raw_records}，"
         f"源记录写入/核验={written_raw}，工单={stats.work_order_records}，工单写入/核验={written_work_orders}，"
-        f"新增={added}，更新={updated}，未变={unchanged}，停用={deactivated}"
+        f"新增={added}，更新={updated}，未变={unchanged}，停用={deactivated}，删除={deleted}"
     )
     return summary
 
@@ -2828,7 +2928,8 @@ class SyncApplication(ttk.Frame):
                         f"生成/核验 {result.source_tables:,} 张源表、{result.raw_records:,} 条源记录"
                         f"（本次写入/核验 {result.raw_written:,} 条），工单映射 {result.work_orders:,} 条"
                         f"（本次写入/核验 {result.work_orders_written:,} 条）；"
-                        f"新增 {result.added:,}，修改 {result.updated:,}，未变 {result.unchanged:,}。"
+                        f"新增 {result.added:,}，修改 {result.updated:,}，未变 {result.unchanged:,}，"
+                        f"停用 {result.deactivated:,}，删除 {result.deleted:,}。"
                     )
                     self._write_log(message)
                     self.status_var.set(message)

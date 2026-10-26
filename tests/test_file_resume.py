@@ -36,7 +36,7 @@ class FileResumeTests(unittest.TestCase):
         self.assertIn("`source_system` = 'ERP_EXCEL'", cursor.calls[1][0])
         self.assertIn("work_order.`source_system` = 'ERP_EXCEL'", cursor.calls[2][0])
 
-    def test_partial_material_overwrite_does_not_deactivate_missing_rows(self):
+    def test_complete_material_overwrite_deletes_missing_rows(self):
         class Connection:
             def cursor(self):
                 return self
@@ -59,6 +59,7 @@ class FileResumeTests(unittest.TestCase):
         class Client:
             def __init__(self, _config):
                 self.deactivated = []
+                self.rows = {"A", "B"}
 
             def _connect(self):
                 return Connection()
@@ -73,6 +74,11 @@ class FileResumeTests(unittest.TestCase):
             def _deactivate_removed_file_records(self, _cursor, removed):
                 self.deactivated.append(removed)
                 return sum(map(len, removed["raw"].values()))
+
+            def _delete_missing_snapshot_rows(self, _cursor, _table, current_keys):
+                missing = self.rows - set(current_keys)
+                self.rows.difference_update(missing)
+                return len(missing), missing
 
         def records(_config, _callback, stats, *, source_directory, selected_files):
             path = selected_files[0]
@@ -99,11 +105,13 @@ class FileResumeTests(unittest.TestCase):
                 sync.save_state({sync.SOURCE_IDENTITY_VERSION_STATE_KEY: "5"})
                 sync.synchronize_database_directory(config, False, lambda _: None)
                 file.write_bytes(b"part")
-                sync.synchronize_database_directory(config, False, lambda _: None)
+                summary = sync.synchronize_database_directory(config, False, lambda _: None)
+            self.assertEqual({"A"}, client.rows)
+            self.assertEqual(1, summary.deleted)
             self.assertTrue(all("qms_material" not in removed.get("raw", {})
                                 for removed in client.deactivated))
 
-    def test_overwritten_non_material_export_deactivates_removed_rows(self):
+    def test_overwritten_non_complete_export_deactivates_removed_rows(self):
         class Connection:
             def cursor(self):
                 return self
@@ -145,14 +153,14 @@ class FileResumeTests(unittest.TestCase):
                 yield sync.RawSourceRecord(
                     source_file=path.as_posix(), sheet_name="Test", source_row_no=2,
                     business_key=part, source_key=part, row_hash=part,
-                    field_values={}, source_table="qms_customer_part", field_definitions={},
+                    field_values={}, source_table="qms_purchase_order", field_definitions={},
                 ), None
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / "daily"
             source.mkdir()
-            file = source / "客户料号资料.xls"
+            file = source / "采购订单资料.xls"
             file.write_bytes(b"full")
             config = {"skip_initialization": True, "incremental_directory": str(source)}
             client = Client(config)
@@ -164,7 +172,7 @@ class FileResumeTests(unittest.TestCase):
                 file.write_bytes(b"part")
                 sync.synchronize_database_directory(config, False, lambda _: None)
             self.assertTrue(client.removed, "overwritten export must reconcile removed rows")
-            self.assertEqual({"qms_customer_part": ["B"]}, client.removed[-1]["raw"])
+            self.assertEqual({"qms_purchase_order": ["B"]}, client.removed[-1]["raw"])
 
     def test_same_named_files_in_different_daily_roots_have_separate_checkpoints(self):
         with tempfile.TemporaryDirectory() as temporary:
