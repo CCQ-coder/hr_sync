@@ -4,19 +4,53 @@ import tempfile
 import unittest
 import json
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+
+from openpyxl import Workbook
+from pymysql.cursors import RE_INSERT_VALUES
 
 import qms_erp_sync as sync
 
 
 class SourceIdentityTests(unittest.TestCase):
+    def test_finished_goods_receipt_prefers_detail_id_to_shared_receipt_number(self):
+        first = {
+            "erp_receipt_id_m": "DG01646538", "erp_receipt_no": "DF01173552",
+            "erp_internal_product_no": "02PH02148A01", "erp_current_receipt_quantity": "100",
+        }
+        other_detail = {**first, "erp_receipt_id_m": "DG01646533"}
+        updated = {**first, "erp_current_receipt_quantity": "200"}
+        self.assertNotEqual(
+            sync.erp_row_identity("qms_finished_goods_receipt", first),
+            sync.erp_row_identity("qms_finished_goods_receipt", other_detail),
+        )
+        self.assertEqual(
+            sync.erp_row_identity("qms_finished_goods_receipt", first),
+            sync.erp_row_identity("qms_finished_goods_receipt", updated),
+        )
+
+    def test_source_upsert_uses_pymysql_multirow_insert(self):
+        client = sync.QmsDatabaseClient(sync.DEFAULT_CONFIG)
+        cursor = Mock()
+        records = [sync.RawSourceRecord(
+            "a.xls", "Sheet1", number, str(number), f"ERP5:{number}", "hash", {},
+            "qms_material", {},
+        ) for number in (2, 3)]
+        client._upsert_source_records(cursor, "qms_material", records, ensure_schema=False)
+        statement, rows = cursor.executemany.call_args.args
+        self.assertEqual(2, len(rows))
+        self.assertIsNotNone(RE_INSERT_VALUES.match(statement))
+
     def test_existing_legacy_database_keys_require_rebuild(self):
         class Cursor:
-            def execute(self, *_args):
-                pass
+            def execute(self, statement, *_args):
+                self.statement = statement
 
             def fetchone(self):
-                return (1,)
+                return (1,) if "NOT LIKE 'ERP5:%'" in self.statement else None
+
+            def executemany(self, *_args):
+                pass
 
         client = sync.QmsDatabaseClient({
             "database_host": "localhost", "database_port": "3306",
@@ -78,6 +112,54 @@ class SourceIdentityTests(unittest.TestCase):
 
 
 class InitializationPlanTests(unittest.TestCase):
+    def test_source_table_creation_is_cached_across_record_batches(self):
+        class Cursor:
+            def __init__(self):
+                self.statements = []
+
+            def execute(self, statement, _parameters=None):
+                self.statements.append(statement)
+
+        client = sync.QmsDatabaseClient(sync.DEFAULT_CONFIG)
+        cursor = Cursor()
+        with patch.object(client, "_read_table_columns", return_value={}), \
+                patch.object(client, "_ensure_erp_columns"):
+            client._ensure_source_table_schema(cursor, "qms_material", {})
+            client._ensure_source_table_schema(cursor, "qms_material", {})
+        self.assertEqual(1, sum("CREATE TABLE" in sql for sql in cursor.statements))
+
+    def test_header_preflight_resolves_fields_without_reading_data_rows(self):
+        field = sync.ErpFieldDefinition(
+            "qms_material", "原料资料明细.xlsx", "Test", "原料编号", "原料编号",
+            "erp_material_no", sync.legacy_database_column_name("原料编号"),
+            sync.erp_column_comment("原料编号"), 1,
+        )
+        schema = sync.ResolvedSourceSchema(
+            (sync.normalize_header("原料编号"),), False, "qms_material", (field,),
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "原料资料明细.xlsx"
+            workbook = Workbook()
+            workbook.active.title = "Test"
+            workbook.active.append(["原料编号"])
+            workbook.active.append(["M1"])
+            workbook.save(path)
+            workbook.close()
+            found = []
+            stats = sync.SourceScanStats()
+            with patch.object(sync, "load_erp_field_registry", return_value=Mock()), \
+                    patch.object(sync, "resolve_source_schema", return_value=schema), \
+                    patch.object(sync, "xlsx_safe_cell", side_effect=AssertionError("read data row")):
+                rows = list(sync.iter_all_source_records(
+                    {}, lambda _: None, stats, source_directory=root,
+                    selected_files=(path,), headers_only=True,
+                    on_sheet=lambda table, fields: found.append((table, fields)),
+                ))
+        self.assertEqual([], rows)
+        self.assertEqual([("qms_material", {"erp_material_no": field})], found)
+        self.assertEqual((1, 1, 0), (stats.files_scanned, stats.sheets_scanned, stats.raw_records))
+
     def test_clear_rejects_nontransactional_tables_and_external_dependents(self):
         class Cursor:
             def __init__(self, answers):
@@ -179,8 +261,12 @@ class InitializationPlanTests(unittest.TestCase):
             def _upsert_source_records(self, *_args, **_kwargs):
                 raise sync.SyncError("write failed")
 
-        def records(_config, _callback, stats, *, source_directory, selected_files):
+        def records(_config, _callback, stats, *, source_directory, selected_files,
+                    headers_only=False, on_sheet=None):
             stats.files_scanned += 1
+            if headers_only:
+                on_sheet("qms_material", {})
+                return
             stats.raw_records += 1
             yield sync.RawSourceRecord(
                 source_file=selected_files[0].name, sheet_name="Sheet1", source_row_no=2,

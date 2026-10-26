@@ -21,6 +21,7 @@ device_raw_receiver_data/
 # Deployment-only state and credentials
 qms_erp_sync_config.json
 qms_erp_sync_state.json
+qms_erp_sync_state_progress/
 device_receiver_config.json
 ini_share_sync/sync_config.json
 ini_share_sync/sync_state.json

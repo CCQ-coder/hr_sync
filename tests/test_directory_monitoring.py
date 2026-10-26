@@ -88,7 +88,7 @@ class DirectoryFingerprintTests(unittest.TestCase):
                 "skip_initialization": False,
             }
             _, checkpoints = sync.build_source_scan_plan(config, {})
-            checkpoints[sync.SOURCE_IDENTITY_VERSION_STATE_KEY] = "4"
+            checkpoints[sync.SOURCE_IDENTITY_VERSION_STATE_KEY] = "5"
             with patch.object(sync, "load_state", return_value=checkpoints), \
                     patch.object(sync, "QmsDatabaseClient", side_effect=AssertionError("database should not open")):
                 summary = sync.synchronize_database_directory(config, False, lambda _: None)
@@ -116,6 +116,25 @@ class DirectoryFingerprintTests(unittest.TestCase):
 
             workbook.unlink()
             self.assertNotEqual(baseline, fingerprint(directory))
+
+    def test_same_size_and_mtime_overwrite_changes_checkpoint_and_monitor(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workbook = root / "采购订单资料.xls"
+            workbook.write_bytes(b"before")
+            original = workbook.stat()
+            config = {"skip_initialization": True, "incremental_directory": str(root)}
+            _, previous = sync.build_source_scan_plan(config, {})
+            fingerprint = sync.directory_fingerprint(root)
+
+            workbook.write_bytes(b"after!")
+            os.utime(workbook, ns=(original.st_atime_ns, original.st_mtime_ns))
+            self.assertEqual(original.st_size, workbook.stat().st_size)
+            self.assertEqual(original.st_mtime_ns, workbook.stat().st_mtime_ns)
+
+            groups, _ = sync.build_source_scan_plan(config, previous)
+            self.assertEqual([workbook], [path for group in groups for path in group.files])
+            self.assertNotEqual(fingerprint, sync.directory_fingerprint(root))
 
     def test_monitor_detects_a_change_after_a_sync_started(self) -> None:
         """A later file edit remains pending after the current sync completes."""

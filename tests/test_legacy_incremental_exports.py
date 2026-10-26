@@ -85,6 +85,10 @@ class LegacyIncrementalExportTests(unittest.TestCase):
         mojibake = "\xd4\xad\xc1\xcf\xc8\xeb\xbf\xe2\xb5\xa5\xd7\xca\xc1\xcf"
         self.assertEqual(sync.decode_legacy_xls_text(mojibake), "原料入库单资料")
         self.assertEqual(sync.decode_legacy_xls_text("ylr_bh"), "ylr_bh")
+        warnings = [0]
+        self.assertEqual(sync.decode_legacy_xls_text("\x81", warnings), "\\x81")
+        self.assertEqual(sync.decode_legacy_xls_text("\x82", warnings), "\\x82")
+        self.assertEqual(warnings, [2])
 
     def test_real_legacy_biff5_customer_part_export_can_read_past_row_16384(self):
         source = Path(r"D:\华软导出\2026-09-11\客户料号资料.xls")
