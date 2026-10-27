@@ -482,6 +482,9 @@ class InitializationTests(unittest.TestCase):
             def execute(self, statement):
                 events.append(statement)
 
+            def rollback(self):
+                events.append("rollback")
+
             def close(self):
                 pass
 
@@ -511,8 +514,10 @@ class InitializationTests(unittest.TestCase):
             if headers_only:
                 on_sheet("qms_material", {})
                 return
-            stats.raw_records += 1
             key = selected_files[0].read_text()
+            if key == "empty":
+                return
+            stats.raw_records += 1
             yield sync.RawSourceRecord(
                 source_file=selected_files[0].as_posix(), sheet_name="Test", source_row_no=2,
                 business_key=key, source_key=f"ERP5:{key}", row_hash=key,
@@ -522,15 +527,17 @@ class InitializationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             baseline = root / "baseline"
-            for day, value in (("2026-10-22", "old"), ("2026-10-23", "new")):
+            for day, value in (("2026-10-22", "old"), ("2026-10-23", "new"),
+                               ("2026-10-27", "empty")):
                 folder = baseline / day
                 folder.mkdir(parents=True)
                 (folder / "原料资料明细.xls").write_text(value)
             config = {"initialization_directory": str(baseline)}
+            messages = []
             with patch.object(sync, "state_path", return_value=root / "state.json"), \
                     patch.object(sync, "QmsDatabaseClient", Client), \
                     patch.object(sync, "iter_all_source_records", side_effect=records):
-                sync.synchronize_database_directory(config, False, lambda _: None, initialize=True)
+                sync.synchronize_database_directory(config, False, messages.append, initialize=True)
                 state = sync.load_state()
             self.assertEqual([
                 "schema", "commit", "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ", "clear",
@@ -539,6 +546,7 @@ class InitializationTests(unittest.TestCase):
                 "commit",
             ], events)
             self.assertEqual("1", state["complete-snapshot-version"])
+            self.assertTrue(any("跳过没有有效数据" in message for message in messages))
 
 
 if __name__ == "__main__":

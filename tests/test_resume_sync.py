@@ -568,7 +568,7 @@ class ResumeTests(unittest.TestCase):
             self.assertEqual(1, events.count("deactivate"))
             self.assertTrue(any("跳过" in message and "原料资料明细.xls" in message for message in messages))
 
-    def test_empty_complete_reinitialize_rolls_back(self) -> None:
+    def test_empty_complete_reinitialize_skips_without_deletion(self) -> None:
         events = []
 
         class Connection:
@@ -617,11 +617,13 @@ class ResumeTests(unittest.TestCase):
             with patch.object(sync, "state_path", return_value=root / "state.json"), \
                     patch.object(sync, "iter_all_source_records", side_effect=no_records), \
                     patch.object(sync, "QmsDatabaseClient", return_value=Client()):
-                with self.assertRaisesRegex(sync.SyncError, "完整导出.*没有有效数据"):
-                    sync.synchronize_database_directory(config, False, lambda _: None, initialize=True)
-                self.assertFalse((root / "state.json").exists())
+                result = sync.synchronize_database_directory(
+                    config, False, lambda _: None, initialize=True,
+                )
+                self.assertEqual(0, result.deleted)
+                self.assertTrue((root / "state.json").exists())
         self.assertEqual([
-            "commit", "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ", "clear", "rollback",
+            "commit", "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ", "clear", "commit",
         ], events)
 
     def test_failed_latest_snapshot_is_replayed_after_older_file_checkpoint(self) -> None:
