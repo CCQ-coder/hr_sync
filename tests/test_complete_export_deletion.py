@@ -42,11 +42,13 @@ class MemoryClient:
     def __init__(self):
         self.tables = {table: {"ERP5:A", "ERP5:B"} for table in COMPLETE_REPORTS.values()}
         self.delete_calls = []
+        self.upsert_calls = []
 
     def _connect(self):
         return MemoryConnection()
 
     def _upsert_source_records(self, _cursor, table, records):
+        self.upsert_calls.append((table, tuple(record.source_key for record in records)))
         self.tables[table].update(record.source_key for record in records)
 
     def _delete_missing_snapshot_rows(self, _cursor, table, current_keys):
@@ -72,6 +74,55 @@ def report_rows(_config, _callback, stats, *, source_directory, selected_files):
 
 
 class CompleteExportDeletionTests(unittest.TestCase):
+    def test_legacy_recovery_skips_empty_complete_export_without_changing_old_rows(self):
+        class RecoveryClient(MemoryClient):
+            def _upsert_source_records(self, *_args):
+                raise AssertionError("empty export must not write rows")
+
+            def _deactivate_legacy_rows_for_file(self, *_args):
+                raise AssertionError("empty export must not deactivate legacy rows")
+
+            def _deactivate_legacy_rows_for_complete_export(self, *_args):
+                raise AssertionError("empty export must not deactivate a complete table")
+
+            def _deactivate_missing_snapshot_rows(self, *_args):
+                raise AssertionError("empty export must not reconcile a snapshot")
+
+            def _delete_missing_snapshot_rows(self, *_args):
+                raise AssertionError("empty export must not delete rows")
+
+            def _deactivate_removed_file_records(self, *_args):
+                raise AssertionError("empty export must not deactivate prior membership")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "daily"
+            source.mkdir()
+            export = source / "原料资料明细.XLS"
+            export.write_bytes(b"empty")
+            file_key = sync.source_file_state_key("incremental", source, export)
+            membership_key = sync.file_membership_state_key(file_key)
+            membership = '{"raw":{"qms_material":["ERP5:A"]},"work_orders":[],"batches":[]}'
+            client = RecoveryClient()
+            with patch.object(sync, "state_path", return_value=root / "state.json"), \
+                    patch.object(sync, "iter_all_source_records", side_effect=report_rows), \
+                    patch.object(sync, "QmsDatabaseClient", return_value=client):
+                sync.save_state({
+                    sync.SOURCE_IDENTITY_VERSION_STATE_KEY: "4",
+                    file_key: sync.source_file_checkpoint(export),
+                    membership_key: membership,
+                })
+                summary = sync.synchronize_database_directory(
+                    {"skip_initialization": True, "incremental_directory": str(source)},
+                    False, lambda _: None,
+                )
+                saved = sync.load_state()
+            self.assertEqual(0, summary.deactivated)
+            self.assertEqual(0, summary.deleted)
+            self.assertEqual({"ERP5:A", "ERP5:B"}, client.tables["qms_material"])
+            self.assertEqual(membership, saved[membership_key])
+            self.assertEqual(sync.source_file_checkpoint(export), saved[file_key])
+
     def test_legacy_recovery_deactivates_missing_new_keys_without_delete(self):
         class RecoveryClient(MemoryClient):
             def __init__(self):
@@ -149,23 +200,71 @@ class CompleteExportDeletionTests(unittest.TestCase):
             self.assertTrue(all(keys == {"ERP5:A"} for table, keys in client.tables.items()
                                 if table != "qms_material"))
 
-    def test_empty_complete_export_cannot_delete_a_table(self):
+    def test_empty_complete_export_skips_without_deletion_and_continues(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / "daily"
             source.mkdir()
-            (source / "原料资料明细.XLS").write_bytes(b"empty")
+            empty = source / "2026-10-27" / "原料资料明细.XLS"
+            other = source / "2026-10-28" / "客户料号资料.XLS"
+            for path, content in ((empty, b"empty"), (other, b"newer")):
+                path.parent.mkdir()
+                path.write_bytes(content)
+            client = MemoryClient()
+            empty_key = sync.source_file_state_key("incremental", source, empty)
+            membership_key = sync.file_membership_state_key(empty_key)
+            membership = '{"raw":{"qms_material":["ERP5:B"]},"work_orders":[],"batches":[]}'
+            messages = []
+            with patch.object(sync, "state_path", return_value=root / "state.json"), \
+                    patch.object(sync, "iter_all_source_records", side_effect=report_rows), \
+                    patch.object(sync, "QmsDatabaseClient", return_value=client):
+                sync.save_state({sync.SOURCE_IDENTITY_VERSION_STATE_KEY: "5", membership_key: membership})
+                summary = sync.synchronize_database_directory(
+                    {"skip_initialization": True, "incremental_directory": str(source)},
+                    False, messages.append,
+                )
+                saved = sync.load_state()
+            self.assertEqual({"ERP5:A", "ERP5:B"}, client.tables["qms_material"])
+            self.assertEqual({"ERP5:A"}, client.tables["qms_customer_part"])
+            self.assertNotIn("qms_material", client.delete_calls)
+            self.assertEqual(1, summary.deleted)
+            self.assertEqual(membership, saved[membership_key])
+            self.assertEqual(sync.source_file_checkpoint(empty), saved[empty_key])
+            self.assertTrue(any("跳过没有有效数据" in message for message in messages))
+
+    def test_old_complete_export_does_not_write_when_latest_is_empty(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "daily"
+            old = source / "2026-10-22" / "原料资料明细.XLS"
+            latest = source / "2026-10-27" / "原料资料明细.XLS"
+            for path, content in ((old, b"old"), (latest, b"empty")):
+                path.parent.mkdir(parents=True)
+                path.write_bytes(content)
             client = MemoryClient()
             with patch.object(sync, "state_path", return_value=root / "state.json"), \
                     patch.object(sync, "iter_all_source_records", side_effect=report_rows), \
                     patch.object(sync, "QmsDatabaseClient", return_value=client):
                 sync.save_state({sync.SOURCE_IDENTITY_VERSION_STATE_KEY: "5"})
+                sync.synchronize_database_directory(
+                    {"skip_initialization": True, "incremental_directory": str(source)},
+                    False, lambda _: None,
+                )
+            self.assertEqual([], client.upsert_calls)
+            self.assertEqual([], client.delete_calls)
+            self.assertEqual({"ERP5:A", "ERP5:B"}, client.tables["qms_material"])
+
+    def test_reinitialize_rejects_empty_complete_export(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "baseline"
+            source.mkdir()
+            (source / "原料资料明细.XLS").write_bytes(b"empty")
+            with patch.object(sync, "iter_all_source_records", side_effect=report_rows):
                 with self.assertRaisesRegex(sync.SyncError, "完整导出.*没有有效数据"):
                     sync.synchronize_database_directory(
-                        {"skip_initialization": True, "incremental_directory": str(source)},
-                        False, lambda _: None,
+                        {"initialization_directory": str(source)}, True, lambda _: None,
+                        initialize=True,
                     )
-            self.assertEqual({"ERP5:A", "ERP5:B"}, client.tables["qms_material"])
 
     def test_changed_old_baseline_replays_latest_and_only_deletes_after_latest(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -191,7 +290,7 @@ class CompleteExportDeletionTests(unittest.TestCase):
                 summary = sync.synchronize_database_directory(
                     {"initialization_directory": str(source)}, False, lambda _: None,
                 )
-            self.assertEqual(2, summary.source_files)
+            self.assertEqual(1, summary.source_files)
             self.assertEqual(["qms_material"], client.delete_calls)
             self.assertEqual({"ERP5:A"}, client.tables["qms_material"])
 

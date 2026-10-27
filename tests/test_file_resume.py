@@ -228,6 +228,8 @@ class FileResumeTests(unittest.TestCase):
         def records(_config, _callback, stats, *, source_directory, selected_files):
             path = selected_files[0]
             stats.files_scanned += 1
+            if path.read_bytes() == b"empty":
+                return
             for part in ("A", "B") if path.read_bytes() == b"full" else ("A",):
                 stats.raw_records += 1
                 yield sync.RawSourceRecord(
@@ -256,7 +258,15 @@ class FileResumeTests(unittest.TestCase):
                     sync.synchronize_database_directory(config, False, lambda _: None)
                     file.write_bytes(b"part")
                     sync.synchronize_database_directory(config, False, lambda _: None)
+                    file_key = sync.source_file_state_key("incremental", source, file)
+                    membership_key = sync.file_membership_state_key(file_key)
+                    prior_membership = sync.load_state()[membership_key]
+                    prior_removals = len(client.removed)
+                    file.write_bytes(b"empty")
+                    sync.synchronize_database_directory(config, False, lambda _: None)
+                    self.assertEqual(prior_membership, sync.load_state()[membership_key])
                 self.assertEqual(expected, client.removed[-1]["raw"] if client.removed else {})
+                self.assertEqual(prior_removals, len(client.removed))
 
     def test_same_named_files_in_different_daily_roots_have_separate_checkpoints(self):
         with tempfile.TemporaryDirectory() as temporary:
