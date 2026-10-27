@@ -111,7 +111,7 @@ ERP_ROW_IDENTITIES: Mapping[str, Tuple[Tuple[str, ...], ...]] = {
     "qms_purchase_order": (("erp_purchase_order_no", "erp_material_no"), ("erp_purchase_order_no",)),
     "qms_material": (("erp_material_no",),),
     "qms_material_receipt": (("erp_receipt_no", "erp_receipt_detail_no"), ("erp_receipt_detail_no",), ("erp_receipt_no", "erp_material_no"), ("erp_receipt_no",)),
-    "qms_material_issue": (("erp_material_issue_detail_id",), ("erp_material_issue_id", "erp_material_no_id"), ("erp_material_issue_no", "erp_material_no_source_3b3dc2fa70"), ("erp_material_issue_no", "erp_material_no_source_3d14d54480"), ("erp_material_issue_no",)),
+    "qms_material_issue": (("erp_material_issue_detail_id", "erp_receipt_detail_id_no"), ("erp_material_issue_detail_id",), ("erp_material_issue_id", "erp_material_no_id"), ("erp_material_issue_no", "erp_material_no_source_3b3dc2fa70"), ("erp_material_issue_no", "erp_material_no_source_3d14d54480"), ("erp_material_issue_no",)),
     "qms_finished_goods_receipt": (("erp_receipt_id_m",), ("erp_combined_panel_detail_id",), ("erp_receipt_no", "erp_carton_no", "erp_internal_product_no"), ("erp_receipt_no", "erp_internal_product_no"), ("erp_receipt_no",)),
     "qms_delivery_note": (("erp_delivery_note_no", "erp_internal_product_no", "erp_production_order_no"), ("erp_delivery_note_no", "erp_internal_product_no"), ("erp_delivery_note_no",)),
     "qms_completion_quantity": (("erp_barcode", "erp_completion_date_with_time"), ("erp_barcode",)),
