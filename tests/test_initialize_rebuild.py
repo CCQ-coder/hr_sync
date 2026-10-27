@@ -12,6 +12,41 @@ from pymysql.cursors import RE_INSERT_VALUES
 
 
 class SourceIdentityTests(unittest.TestCase):
+    def test_material_issue_keeps_receipt_details_distinct_across_exports(self):
+        columns = (
+            ("出库单明细ID", "erp_material_issue_detail_id"),
+            ("入库单明细ID编号", "erp_receipt_detail_id_no"),
+            ("出库重量", "erp_issue_weight"),
+        )
+
+        def record(file_name, row_no, receipt_detail, weight):
+            definitions = tuple(sync.ErpFieldDefinition(
+                "qms_material_issue", file_name, "Test", header, header, column,
+                column, header, index,
+            ) for index, (header, column) in enumerate(columns, 1))
+            raw_data = dict(zip((header for header, _ in columns),
+                                ("ISSUE-1", receipt_detail, weight)))
+            return next(iter(sync._source_record_pair(
+                file_name, "Test", row_no, raw_data, raw_data, 0, False,
+                sync.SourceScanStats(), "qms_material_issue", definitions,
+                file_name,
+            )))[0]
+
+        first = record("baseline/原料出库单资料.xls", 2, "RECEIPT-1", 10)
+        second = record("baseline/原料出库单资料.xls", 3, "RECEIPT-2", 10)
+        changed = record("daily/原料出库单资料.xls", 25, "RECEIPT-1", 20)
+        self.assertNotEqual(first.source_key, second.source_key)
+        self.assertEqual(first.source_key, changed.source_key)
+        self.assertNotEqual(first.row_hash, changed.row_hash)
+
+    def test_material_issue_without_receipt_detail_keeps_existing_fallback(self):
+        first = {"erp_material_issue_detail_id": "ISSUE-1", "erp_issue_weight": "10"}
+        changed = {**first, "erp_issue_weight": "20"}
+        self.assertEqual(
+            sync.erp_row_identity("qms_material_issue", first),
+            sync.erp_row_identity("qms_material_issue", changed),
+        )
+
     def test_finished_goods_receipt_uses_erp_receipt_id_before_shared_receipt_number(self):
         first = {
             "erp_receipt_id_m": "DG01646538", "erp_receipt_no": "DF01173552",
