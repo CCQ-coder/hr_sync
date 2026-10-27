@@ -198,12 +198,12 @@ class InitializationTests(unittest.TestCase):
         client = object.__new__(sync.QmsDatabaseClient)
         nontransactional = Cursor([[("qms_material", "MyISAM")]])
         with self.assertRaisesRegex(sync.SyncError, "InnoDB"):
-            client._clear_target_tables(nontransactional)
+            client._clear_target_tables(nontransactional, lambda _: None)
         self.assertFalse(any("DELETE FROM" in sql for sql in nontransactional.statements))
 
         external_reference = Cursor([[("qms_material", "InnoDB")], [("other_table",)]])
         with self.assertRaisesRegex(sync.SyncError, "范围外"):
-            client._clear_target_tables(external_reference)
+            client._clear_target_tables(external_reference, lambda _: None)
         self.assertFalse(any("DELETE FROM" in sql for sql in external_reference.statements))
 
     def test_missing_local_state_requires_rebuild(self):
@@ -223,20 +223,34 @@ class InitializationTests(unittest.TestCase):
 
     def test_clear_deletes_all_tenants_in_target_tables(self):
         statements = []
+        progress = []
 
         class Cursor:
             def execute(self, statement):
                 statements.append(statement)
+                self.rowcount = {
+                    "`qms_production_batch`": 5,
+                    "`qms_work_order`": 12,
+                    "`qms_material`": 200,
+                }[statement.split("FROM ")[1]]
 
         client = object.__new__(sync.QmsDatabaseClient)
         with patch.object(client, "_existing_source_tables", return_value={"qms_material"}), \
                 patch.object(client, "_assert_safe_clear"):
-            client._clear_target_tables(Cursor())
+            client._clear_target_tables(Cursor(), progress.append)
         self.assertEqual([
             "DELETE FROM `qms_production_batch`",
             "DELETE FROM `qms_work_order`",
             "DELETE FROM `qms_material`",
         ], statements)
+        self.assertEqual([
+            "正在清空目标表 qms_production_batch…",
+            "目标表 qms_production_batch 已删除 5 行（待初始化完成后提交）。",
+            "正在清空目标表 qms_work_order…",
+            "目标表 qms_work_order 已删除 12 行（待初始化完成后提交）。",
+            "正在清空目标表 qms_material…",
+            "目标表 qms_material 已删除 200 行（待初始化完成后提交）。",
+        ], progress)
 
     def test_old_location_key_state_requires_rebuild(self):
         with patch.object(sync, "load_state", return_value={
@@ -277,7 +291,7 @@ class InitializationTests(unittest.TestCase):
             def _ensure_source_table_schema(self, *_args):
                 events.append("schema")
 
-            def _clear_target_tables(self, _cursor):
+            def _clear_target_tables(self, _cursor, _callback):
                 events.append("clear")
 
             def _existing_source_tables(self, _cursor):
@@ -345,7 +359,7 @@ class InitializationTests(unittest.TestCase):
             def _ensure_source_table_schema(self, *_args):
                 events.append("schema")
 
-            def _clear_target_tables(self, _cursor):
+            def _clear_target_tables(self, _cursor, _callback):
                 events.append("clear")
 
             def _upsert_source_records(self, _cursor, _table, rows, **_kwargs):

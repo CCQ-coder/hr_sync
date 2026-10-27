@@ -594,7 +594,7 @@ class ResumeTests(unittest.TestCase):
             def _connect(self):
                 return Connection()
 
-            def _clear_target_tables(self, _cursor):
+            def _clear_target_tables(self, _cursor, _callback):
                 events.append("clear")
 
             def _delete_missing_snapshot_rows(self, *_args):
