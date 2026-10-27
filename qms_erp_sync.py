@@ -2586,7 +2586,7 @@ def synchronize_database_directory(
                 callback(f"已读取 {stats.raw_records:,} 条 ERP 原始记录…")
         flush_raw_records()
         complete_table = complete_export_table(path)
-        if complete_table and not raw_keys.get(complete_table) and (initialize or file_state):
+        if complete_table and not raw_keys.get(complete_table) and file_state:
             raise SyncError(f"完整导出 {relative_file} 没有有效数据；已停止导入和删除。")
         membership = {
             "raw": {table: sorted(keys) for table, keys in raw_keys.items()},
@@ -2601,6 +2601,7 @@ def synchronize_database_directory(
         callback("正在预检全部 Excel 表头并准备数据库字段；预检通过后才清空目标表。")
         fields_by_table: Dict[str, Dict[str, ErpFieldDefinition]] = {}
         checked_files: Dict[str, str] = {}
+        latest_complete_keys: Dict[str, List[str]] = {}
 
         def collect_sheet_fields(table_name: str, fields: Mapping[str, ErpFieldDefinition]) -> None:
             fields_by_table.setdefault(table_name, {}).update(fields)
@@ -2641,21 +2642,27 @@ def synchronize_database_directory(
                         file_state, membership = process_file(group, path, cursor)
                         if source_file_checkpoint(path) != checked_files[str(path)]:
                             raise SyncError(f"源文件处理期间发生覆盖：{path}；数据库清理和导入已回滚。")
+                        if not file_state:
+                            callback(
+                                f"跳过没有有效数据的 Excel：{path.relative_to(group.directory).as_posix()}；"
+                                "保留此前已导入的记录。"
+                            )
                         complete_table = complete_export_table(path)
-                        deleted_for_file, deleted_keys = (
-                            client._delete_missing_snapshot_rows(
-                                cursor, complete_table, membership["raw"].get(complete_table, []),
-                            ) if complete_table and last_complete_file[complete_table] == (group.role, path)
-                            else (0, [])
-                        )
-                        deleted += deleted_for_file
+                        if complete_table and membership["raw"].get(complete_table):
+                            # Empty later exports do not replace the last usable snapshot.
+                            latest_complete_keys[complete_table] = membership["raw"][complete_table]
                         file_state[file_key] = checked_files[str(path)]
                         file_state[file_membership_state_key(file_key)] = json.dumps(
                             membership, ensure_ascii=False, separators=(",", ":"),
                         )
                         next_state.update(file_state)
-                        for source_key in deleted_keys:
-                            next_state.pop(f"raw:{source_key}", None)
+                for table_name, keys in latest_complete_keys.items():
+                    deleted_for_table, deleted_keys = client._delete_missing_snapshot_rows(
+                        cursor, table_name, keys,
+                    )
+                    deleted += deleted_for_table
+                    for source_key in deleted_keys:
+                        next_state.pop(f"raw:{source_key}", None)
             connection.commit()
         except Exception as exc:
             try:
