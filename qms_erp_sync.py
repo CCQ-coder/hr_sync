@@ -42,6 +42,7 @@ CONFIG_FILE_NAME = "qms_erp_sync_config.json"
 STATE_FILE_NAME = "qms_erp_sync_state.json"
 BASELINE_REPLAY_STATE_KEY = "baseline-replay-pending"
 SOURCE_IDENTITY_VERSION_STATE_KEY = "source-identity-version"
+LEGACY_RECOVERY_PENDING_STATE_KEY = "legacy-source-recovery-pending"
 FULL_SNAPSHOT_DELETE_STATE_KEY = "full-snapshot-delete-version"
 FULL_SNAPSHOT_DELETE_VERSION = "zsh-1"
 LOG_DIR_NAME = "logs"
@@ -679,6 +680,10 @@ def file_membership_state_key(file_key: str) -> str:
     return f"file-membership:{file_key}"
 
 
+def legacy_recovered_state_key(file_key: str) -> str:
+    return f"legacy-recovered:{file_key}"
+
+
 def parse_file_membership(value: str) -> Dict[str, Any]:
     if value:
         try:
@@ -1186,6 +1191,12 @@ class ErpFieldRegistry:
         self, table_name: str, source_file: str, sheet_name: str,
         excel_source_header: str, excel_unique_header: str, column_index: int,
     ) -> ErpFieldDefinition:
+        def comparable_header(value: str) -> str:
+            # Some ERP XLS/XLSX writers encode an in-cell line break as CR,
+            # while the reviewed registry stores LF. Column position still
+            # has to match before this narrow alias is accepted.
+            return value.lstrip("\\").replace("\r\n", "\n").replace("\r", "\n")
+
         scope = (table_name, canonical_source_file_name(source_file), sheet_name, excel_unique_header)
         field = self._by_scope.get(scope)
         if field is None and type(column_index) is int:
@@ -1194,14 +1205,14 @@ class ErpFieldRegistry:
             )
             if (
                 candidate is not None
-                and candidate.excel_source_header.lstrip("\\") == excel_source_header.lstrip("\\")
-                and candidate.excel_unique_header.lstrip("\\") == excel_unique_header.lstrip("\\")
+                and comparable_header(candidate.excel_source_header) == comparable_header(excel_source_header)
+                and comparable_header(candidate.excel_unique_header) == comparable_header(excel_unique_header)
             ):
                 # Some ERP daily exports collapse a doubled leading backslash
                 # in two customer-part headers.  Position and semantic header
                 # still have to match; unrelated header drift remains fatal.
                 field = candidate
-        if (field is None or field.excel_source_header.lstrip("\\") != excel_source_header.lstrip("\\")
+        if (field is None or comparable_header(field.excel_source_header) != comparable_header(excel_source_header)
                 or type(column_index) is not int or field.column_index != column_index):
             raise SyncError(
                 f"字段注册表未登记或表头已变化：{table_name} / {source_file} / {sheet_name} / "
@@ -1711,7 +1722,6 @@ class QmsDatabaseClient:
         self._table_columns: Dict[str, Dict[str, str]] = {}
         self._source_table_ready: set[str] = set()
         self._legacy_json_checked: set[str] = set()
-        self._identity_checked: set[str] = set()
         if not all((self.host, self.port, self.database, self.username, self.tenant)):
             raise SyncError("请完整填写数据库主机、端口、库名、账号和 QMS 租户编码。")
         try:
@@ -1896,11 +1906,6 @@ class QmsDatabaseClient:
         if ensure_schema:
             self._ensure_source_table_schema(cursor, table_name, fields)
         table = self._table_name(table_name)
-        if ensure_schema and table_name not in self._identity_checked:
-            cursor.execute(f"SELECT 1 FROM {table} WHERE `source_key` NOT LIKE 'ERP5:%' LIMIT 1")
-            if cursor.fetchone():
-                raise SyncError("数据库中仍有旧版来源键；请先使用“清空并重新初始化”。")
-            self._identity_checked.add(table_name)
         value_columns = [
             "id", "tenant_code", "source_key", "source_file", "sheet_name", "source_row_no",
             "business_key", "row_hash", *erp_columns,
@@ -1949,6 +1954,38 @@ class QmsDatabaseClient:
             tuple(BUSINESS_SOURCE_TABLES),
         )
         return {str(row[0]) for row in cursor.fetchall()}
+
+    def _deactivate_legacy_rows_for_file(
+        self, cursor, table_name: str, absolute_file: str, relative_file: str,
+    ) -> int:
+        """Keep old-key rows stored while replacing one complete workbook atomically."""
+        total = 0
+        while True:
+            cursor.execute(
+                f"UPDATE {self._table_name(table_name)} SET `status` = 'INACTIVE' "
+                "WHERE `tenant_code` = %s AND `source_file` IN (%s, %s) "
+                "AND `status` = 'ACTIVE' AND `source_key` NOT LIKE 'ERP5:%%' LIMIT 500",
+                (self.tenant, absolute_file, relative_file),
+            )
+            total += cursor.rowcount
+            if cursor.rowcount < 500:
+                return total
+
+    def _deactivate_legacy_rows_for_complete_export(self, cursor, table_name: str) -> int:
+        """A complete export supersedes all of this tenant's old-key rows."""
+        if table_name not in COMPLETE_EXPORT_TABLES:
+            raise SyncError(f"非完整导出表不能停用历史行：{table_name}")
+        total = 0
+        while True:
+            cursor.execute(
+                f"UPDATE {self._table_name(table_name)} SET `status` = 'INACTIVE' "
+                "WHERE `tenant_code` = %s AND `status` = 'ACTIVE' "
+                "AND `source_key` NOT LIKE 'ERP5:%%' LIMIT 500",
+                (self.tenant,),
+            )
+            total += cursor.rowcount
+            if cursor.rowcount < 500:
+                return total
 
     def _clear_target_tables(self, cursor) -> None:
         """Delete every tenant's rows; the caller keeps this inside the import transaction."""
@@ -2007,6 +2044,35 @@ class QmsDatabaseClient:
             )
             deleted += cursor.rowcount
         return deleted, missing
+
+    def _deactivate_missing_snapshot_rows(
+        self, cursor, table_name: str, current_keys: Sequence[str],
+    ) -> Tuple[int, List[str]]:
+        """During recovery, retain rows absent from the latest complete export."""
+        if table_name not in COMPLETE_EXPORT_TABLES or not current_keys or any(
+            not key.startswith("ERP5:") for key in current_keys
+        ):
+            raise SyncError(f"完整导出 {table_name} 没有有效数据，已停止停用。")
+        table = self._table_name(table_name)
+        cursor.execute(
+            f"SELECT `source_key` FROM {table} "
+            "WHERE `tenant_code` = %s AND `status` = 'ACTIVE' "
+            "AND `source_key` LIKE 'ERP5:%%'",
+            (self.tenant,),
+        )
+        missing = sorted({str(row[0]) for row in cursor.fetchall()} - set(current_keys))
+        changed = 0
+        for offset in range(0, len(missing), 500):
+            batch = missing[offset:offset + 500]
+            placeholders = ", ".join(["%s"] * len(batch))
+            cursor.execute(
+                f"UPDATE {table} SET `status` = 'INACTIVE' "
+                f"WHERE `tenant_code` = %s AND `status` = 'ACTIVE' "
+                f"AND `source_key` IN ({placeholders})",
+                (self.tenant, *batch),
+            )
+            changed += cursor.rowcount
+        return changed, missing
 
     def _deactivate_removed_file_records(self, cursor, removed: Mapping[str, Any]) -> int:
         """Deactivate keys formerly owned by an overwritten export."""
@@ -2322,14 +2388,29 @@ def synchronize_database_directory(
     if initialize and bool(config.get("skip_initialization", False)):
         raise SyncError("清空并重新初始化需要选择初始化数据目录，不能勾选“跳过初始化”。")
     loaded_state = {} if initialize else load_state()
-    if not initialize and not dry_run and loaded_state.get(SOURCE_IDENTITY_VERSION_STATE_KEY) != "5":
-        raise SyncError("来源键规则已更新；请先使用“清空并重新初始化”重建数据和断点。")
+    legacy_recovery = not initialize and not dry_run and (
+        loaded_state.get(SOURCE_IDENTITY_VERSION_STATE_KEY) != "5"
+        or loaded_state.get(LEGACY_RECOVERY_PENDING_STATE_KEY) == "1"
+    )
+    if legacy_recovery:
+        callback("检测到旧版来源键或缺失断点：将逐文件恢复，保留并停用被新版覆盖的旧记录。")
     previous = loaded_state
     next_state: Dict[str, str] = dict(previous)
+    plan_previous = dict(previous)
+    if legacy_recovery:
+        # Old checkpoints only prove the old identity was processed. A file is
+        # safe to skip after this release has committed and marked it recovered.
+        for key in list(plan_previous):
+            if key.startswith("source-file:") and (
+                plan_previous.get(legacy_recovered_state_key(key)) != plan_previous[key]
+            ):
+                del plan_previous[key]
+        plan_previous[BASELINE_REPLAY_STATE_KEY] = "0"
     scan_groups, checkpoints = build_source_scan_plan(
-        config, previous, force_all=initialize,
+        config, plan_previous, force_all=initialize,
         force_latest_complete_exports=(
-            not initialize and previous.get(FULL_SNAPSHOT_DELETE_STATE_KEY) != FULL_SNAPSHOT_DELETE_VERSION
+            not initialize and not legacy_recovery
+            and previous.get(FULL_SNAPSHOT_DELETE_STATE_KEY) != FULL_SNAPSHOT_DELETE_VERSION
         ),
     )
     last_complete_file: Dict[str, Tuple[str, Path]] = {}
@@ -2348,6 +2429,22 @@ def synchronize_database_directory(
     client = None if dry_run or not scan_groups else QmsDatabaseClient(config)
 
     if not scan_groups:
+        if legacy_recovery and previous.get(LEGACY_RECOVERY_PENDING_STATE_KEY) == "1":
+            next_state[SOURCE_IDENTITY_VERSION_STATE_KEY] = "5"
+            next_state[LEGACY_RECOVERY_PENDING_STATE_KEY] = "0"
+            next_state[FULL_SNAPSHOT_DELETE_STATE_KEY] = FULL_SNAPSHOT_DELETE_VERSION
+            for key in list(next_state):
+                if key.startswith("legacy-recovered:"):
+                    del next_state[key]
+            clear_file_progress()
+            save_state(next_state)
+            callback("已恢复全部文件断点；后续仅处理新增或变更的 Excel 文件。")
+            return SyncSummary(
+                source_file="已恢复的增量数据", rows_read=0, added=0, updated=0,
+                unchanged=0, deactivated=0, dry_run=False, source_files=0,
+                raw_records=0, work_orders=0, source_tables=0, raw_written=0,
+                work_orders_written=0,
+            )
         if not dry_run and progress_directory().is_dir():
             save_state(previous)
         if not dry_run:
@@ -2519,12 +2616,22 @@ def synchronize_database_directory(
                             next_state.pop(f"raw:{source_key}", None)
             connection.commit()
         except Exception as exc:
-            connection.rollback()
+            try:
+                connection.rollback()
+            except Exception as rollback_exc:
+                raise SyncError(
+                    "重新初始化中断，数据库结果未确认；请先核查目标表，暂勿重复清空。"
+                    f"原始错误：{type(exc).__name__}: {exc}；"
+                    f"回滚错误：{type(rollback_exc).__name__}: {rollback_exc}"
+                ) from exc
             if isinstance(exc, MySQLError):
                 raise SyncError(f"重新初始化失败，数据库清理和导入已回滚：{exc}") from exc
             raise
         finally:
-            connection.close()
+            try:
+                connection.close()
+            except Exception:
+                pass
         next_state[SOURCE_IDENTITY_VERSION_STATE_KEY] = "5"
 
     for group in (() if initialize and not dry_run else scan_groups):
@@ -2552,12 +2659,32 @@ def synchronize_database_directory(
                         if source_file_checkpoint(path) != checkpoint:
                             raise SyncError(f"源文件处理期间发生覆盖：{relative_file}；请重试。")
                         complete_table = complete_export_table(path)
-                        deleted_for_file, deleted_keys = (
-                            client._delete_missing_snapshot_rows(
-                                cursor, complete_table, membership["raw"].get(complete_table, []),
-                            ) if complete_table and last_complete_file[complete_table] == (group.role, path)
-                            else (0, [])
-                        )
+                        legacy_deactivated = 0
+                        if legacy_recovery:
+                            legacy_tables = set(membership["raw"])
+                            if UNCLASSIFIED_SOURCE_TABLE in client._existing_source_tables(cursor):
+                                # Earlier builds stored newly classified exports
+                                # (for example completion quantity) here.
+                                legacy_tables.add(UNCLASSIFIED_SOURCE_TABLE)
+                            for table_name in legacy_tables:
+                                legacy_deactivated += client._deactivate_legacy_rows_for_file(
+                                    cursor, table_name, path.resolve().as_posix(), relative_file,
+                                )
+                            if complete_table and last_complete_file[complete_table] == (group.role, path):
+                                legacy_deactivated += client._deactivate_legacy_rows_for_complete_export(
+                                    cursor, complete_table,
+                                )
+                        snapshot_deactivated = 0
+                        deleted_for_file, deleted_keys = 0, []
+                        if complete_table and last_complete_file[complete_table] == (group.role, path):
+                            if legacy_recovery:
+                                snapshot_deactivated, deleted_keys = client._deactivate_missing_snapshot_rows(
+                                    cursor, complete_table, membership["raw"].get(complete_table, []),
+                                )
+                            else:
+                                deleted_for_file, deleted_keys = client._delete_missing_snapshot_rows(
+                                    cursor, complete_table, membership["raw"].get(complete_table, []),
+                                )
                         removed = removed_file_membership(next_state, file_key, membership)
                         for table_name in COMPLETE_EXPORT_TABLES | PARTIAL_EXPORT_TABLES:
                             removed["raw"].pop(table_name, None)
@@ -2586,6 +2713,9 @@ def synchronize_database_directory(
                     pass
             file_state[file_key] = checkpoint
             file_state[SOURCE_IDENTITY_VERSION_STATE_KEY] = "5"
+            if legacy_recovery:
+                file_state[LEGACY_RECOVERY_PENDING_STATE_KEY] = "1"
+                file_state[legacy_recovered_state_key(file_key)] = checkpoint
             if complete_table and last_complete_file[complete_table] != (group.role, path):
                 file_state[FULL_SNAPSHOT_DELETE_STATE_KEY] = "pending"
             if (group.role == "initialization" and any(
@@ -2609,7 +2739,9 @@ def synchronize_database_directory(
             next_state.update(file_state)
             for source_key in deleted_keys:
                 next_state.pop(f"raw:{source_key}", None)
-            deactivated += deactivated_for_file
+            deactivated += deactivated_for_file + legacy_deactivated + snapshot_deactivated
+            if legacy_deactivated:
+                callback(f"已保留并停用 {legacy_deactivated:,} 条旧来源键记录：{relative_file}。")
             deleted += deleted_for_file
             if deleted_for_file:
                 callback(f"完整导出已删除 {deleted_for_file:,} 条旧记录：{relative_file}。")
@@ -2629,12 +2761,20 @@ def synchronize_database_directory(
     else:
         if any(group.role == "incremental" for group in scan_groups):
             next_state[BASELINE_REPLAY_STATE_KEY] = "0"
+        if legacy_recovery:
+            next_state[LEGACY_RECOVERY_PENDING_STATE_KEY] = "0"
+            for key in list(next_state):
+                if key.startswith("legacy-recovered:"):
+                    del next_state[key]
         next_state[FULL_SNAPSHOT_DELETE_STATE_KEY] = FULL_SNAPSHOT_DELETE_VERSION
         try:
+            if legacy_recovery:
+                clear_file_progress()
             save_state(next_state)
         except OSError as exc:
             raise SyncError("数据库已提交，但本机同步断点保存失败；请修复磁盘权限后重新初始化。") from exc
-        clear_file_progress()
+        if not legacy_recovery:
+            clear_file_progress()
         callback("文件处理状态已保存；后续只处理新增或变更的 Excel 文件。")
 
     summary = SyncSummary(

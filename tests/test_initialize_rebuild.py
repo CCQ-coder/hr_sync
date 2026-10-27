@@ -41,7 +41,7 @@ class SourceIdentityTests(unittest.TestCase):
         self.assertEqual(2, len(rows))
         self.assertIsNotNone(RE_INSERT_VALUES.match(statement))
 
-    def test_existing_legacy_database_keys_require_rebuild(self):
+    def test_existing_legacy_database_keys_do_not_block_upsert(self):
         class Cursor:
             def execute(self, statement, *_args):
                 self.statement = statement
@@ -50,19 +50,89 @@ class SourceIdentityTests(unittest.TestCase):
                 return (1,) if "NOT LIKE 'ERP5:%'" in self.statement else None
 
             def executemany(self, *_args):
-                pass
+                self.statement = _args[0]
 
         client = sync.QmsDatabaseClient({
             "database_host": "localhost", "database_port": "3306",
             "database_name": "qms", "database_username": "qms", "tenant_code": "t",
         })
         record = sync.RawSourceRecord(
-            "a.xls", "Sheet1", 2, "A", "ERP4:new", "hash", {},
+            "a.xls", "Sheet1", 2, "A", "ERP5:new", "hash", {},
             "qms_material", {},
         )
+        cursor = Cursor()
         with patch.object(client, "_ensure_source_table_schema"):
-            with self.assertRaisesRegex(sync.SyncError, "旧版来源键"):
-                client._upsert_source_records(Cursor(), "qms_material", [record])
+            client._upsert_source_records(cursor, "qms_material", [record])
+        self.assertNotIn("NOT LIKE 'ERP5:%'", cursor.statement)
+
+    def test_legacy_file_deactivation_is_tenant_scoped_and_keeps_rows(self):
+        class Cursor:
+            rowcount = 3
+
+            def __init__(self):
+                self.calls = []
+
+            def execute(self, statement, parameters):
+                self.calls.append((statement, parameters))
+
+        client = sync.QmsDatabaseClient(sync.DEFAULT_CONFIG)
+        cursor = Cursor()
+        count = client._deactivate_legacy_rows_for_file(
+            cursor, "qms_material", "D:/daily/原料资料明细.xls", "原料资料明细.xls",
+        )
+        self.assertEqual(3, count)
+        statement, parameters = cursor.calls[0]
+        self.assertIn("UPDATE `qms_material`", statement)
+        self.assertNotIn("DELETE", statement)
+        self.assertIn("`tenant_code` = %s", statement)
+        self.assertEqual(client.tenant, parameters[0])
+        self.assertEqual(("D:/daily/原料资料明细.xls", "原料资料明细.xls"), parameters[1:])
+
+    def test_complete_export_deactivates_legacy_rows_in_small_batches(self):
+        class Cursor:
+            def __init__(self):
+                self.calls = []
+                self.rowcount = 0
+                self.counts = iter((500, 500, 2))
+
+            def execute(self, statement, parameters):
+                self.calls.append((statement, parameters))
+                self.rowcount = next(self.counts)
+
+        client = sync.QmsDatabaseClient(sync.DEFAULT_CONFIG)
+        cursor = Cursor()
+        self.assertEqual(1002, client._deactivate_legacy_rows_for_complete_export(
+            cursor, "qms_material",
+        ))
+        self.assertEqual(3, len(cursor.calls))
+        for statement, parameters in cursor.calls:
+            self.assertIn("LIMIT 500", statement)
+            self.assertNotIn("DELETE", statement)
+            self.assertEqual((client.tenant,), parameters)
+
+    def test_recovery_snapshot_inactivates_missing_new_keys_without_delete(self):
+        class Cursor:
+            def __init__(self):
+                self.calls = []
+                self.rowcount = 1
+
+            def execute(self, statement, parameters):
+                self.calls.append((statement, parameters))
+
+            def fetchall(self):
+                return [("ERP5:A",), ("ERP5:B",)]
+
+        client = sync.QmsDatabaseClient(sync.DEFAULT_CONFIG)
+        cursor = Cursor()
+        changed, missing = client._deactivate_missing_snapshot_rows(
+            cursor, "qms_material", ["ERP5:A"],
+        )
+        self.assertEqual((1, ["ERP5:B"]), (changed, missing))
+        self.assertEqual(2, len(cursor.calls))
+        statement, parameters = cursor.calls[1]
+        self.assertIn("SET `status` = 'INACTIVE'", statement)
+        self.assertNotIn("DELETE", statement)
+        self.assertEqual((client.tenant, "ERP5:B"), parameters)
 
     def test_overwritten_file_deactivates_only_keys_without_other_owner(self):
         first = "file-membership:source-file:initialization:a.xls"
@@ -183,15 +253,13 @@ class InitializationPlanTests(unittest.TestCase):
             client._clear_target_tables(external_reference)
         self.assertFalse(any("DELETE FROM" in sql for sql in external_reference.statements))
 
-    def test_missing_local_state_requires_rebuild(self):
-        with patch.object(sync, "load_state", return_value={}):
-            with self.assertRaisesRegex(sync.SyncError, "清空并重新初始化"):
+    def test_missing_or_legacy_state_enters_recovery_without_clearing(self):
+        for old_state in ({}, {"raw:old-key": "old-hash"}):
+            with self.subTest(old_state=old_state), \
+                    patch.object(sync, "load_state", return_value=old_state), \
+                    patch.object(sync, "build_source_scan_plan", return_value=([], {})) as plan:
                 sync.synchronize_database_directory({}, False, lambda _: None)
-
-    def test_old_location_key_state_requires_rebuild(self):
-        with patch.object(sync, "load_state", return_value={"raw:old-key": "old-hash"}):
-            with self.assertRaisesRegex(sync.SyncError, "清空并重新初始化"):
-                sync.synchronize_database_directory({}, False, lambda _: None)
+                self.assertFalse(plan.call_args.kwargs["force_all"])
 
     def test_full_rebuild_reads_every_file_even_if_checkpoint_is_unchanged(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -285,6 +353,51 @@ class InitializationPlanTests(unittest.TestCase):
                 with self.assertRaisesRegex(sync.SyncError, "write failed"):
                     sync.synchronize_database_directory(config, False, lambda _: None, initialize=True)
             self.assertEqual(["schema", "commit", "clear", "rollback"], events)
+            save_state.assert_not_called()
+
+    def test_closed_connection_during_rebuild_reports_original_error(self):
+        import pymysql
+
+        class Connection:
+            def cursor(self):
+                return self
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def commit(self):
+                pass
+
+            def rollback(self):
+                raise pymysql.InterfaceError(0, "")
+
+            def close(self):
+                raise pymysql.InterfaceError(0, "")
+
+        class Client:
+            def __init__(self, _config):
+                pass
+
+            def _connect(self):
+                return Connection()
+
+            def _clear_target_tables(self, _cursor):
+                raise pymysql.OperationalError(2013, "connection lost while clearing")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "baseline"
+            source.mkdir()
+            (source / "原料资料明细.xls").write_bytes(b"export")
+            config = {"initialization_directory": str(source), "skip_initialization": False}
+            with patch.object(sync, "QmsDatabaseClient", Client), \
+                    patch.object(sync, "iter_all_source_records", return_value=iter(())), \
+                    patch.object(sync, "save_state") as save_state:
+                with self.assertRaisesRegex(sync.SyncError, "connection lost while clearing") as raised:
+                    sync.synchronize_database_directory(config, False, lambda _: None, initialize=True)
+            self.assertIn("数据库结果未确认", str(raised.exception))
             save_state.assert_not_called()
 
 

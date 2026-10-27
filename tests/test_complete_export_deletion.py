@@ -72,6 +72,45 @@ def report_rows(_config, _callback, stats, *, source_directory, selected_files):
 
 
 class CompleteExportDeletionTests(unittest.TestCase):
+    def test_legacy_recovery_deactivates_missing_new_keys_without_delete(self):
+        class RecoveryClient(MemoryClient):
+            def __init__(self):
+                super().__init__()
+                self.inactivated = []
+
+            def _existing_source_tables(self, _cursor):
+                return set()
+
+            def _deactivate_legacy_rows_for_file(self, *_args):
+                return 0
+
+            def _deactivate_legacy_rows_for_complete_export(self, *_args):
+                return 0
+
+            def _deactivate_missing_snapshot_rows(self, _cursor, table, current_keys):
+                self.inactivated.append((table, tuple(current_keys)))
+                return 1, ["ERP5:B"]
+
+            def _delete_missing_snapshot_rows(self, *_args):
+                raise AssertionError("recovery must retain missing rows")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "daily"
+            source.mkdir()
+            (source / "原料资料明细.XLS").write_bytes(b"newer")
+            client = RecoveryClient()
+            with patch.object(sync, "state_path", return_value=root / "state.json"), \
+                    patch.object(sync, "iter_all_source_records", side_effect=report_rows), \
+                    patch.object(sync, "QmsDatabaseClient", return_value=client):
+                summary = sync.synchronize_database_directory(
+                    {"skip_initialization": True, "incremental_directory": str(source)},
+                    False, lambda _: None,
+                )
+            self.assertEqual(0, summary.deleted)
+            self.assertEqual(1, summary.deactivated)
+            self.assertEqual([("qms_material", ("ERP5:A",))], client.inactivated)
+
     def test_unchanged_latest_exports_reconcile_old_database_rows_after_upgrade(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
