@@ -52,6 +52,27 @@ class RepeatedExportDetailsTests(unittest.TestCase):
         self.assertEqual([row.source_key for row in baseline], [row.source_key for row in daily])
         self.assertNotEqual(baseline[0].row_hash, daily[0].row_hash)
 
+    def test_purchase_order_repeated_material_keeps_each_occurrence(self):
+        headers = ["采购单号", "原料编号", "数量", "单价", "交货日期"]
+        columns = [
+            "erp_purchase_order_no", "erp_material_no", "erp_quantity",
+            "erp_unit_price", "erp_delivery_date",
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            baseline = self.scan(root, "baseline", "采购订单资料.xlsx", headers, columns, [
+                ["KS2504059", "GB10002353", 10, 2, "2026-10-26"],
+                ["KS2504059", "GB10002353", 20, 3, "2026-10-27"],
+            ])
+            daily = self.scan(root, "daily", "采购订单资料.xlsx", headers, columns, [
+                ["KS2504059", "GB10002353", 11, 2, "2026-10-28"],
+                ["KS2504059", "GB10002353", 21, 4, "2026-10-29"],
+            ])
+
+        self.assertEqual(2, len({row.source_key for row in baseline}))
+        self.assertEqual([row.source_key for row in baseline], [row.source_key for row in daily])
+        self.assertNotEqual(baseline[0].row_hash, daily[0].row_hash)
+
     def test_delivery_occurrences_use_production_order_then_ordinal(self):
         headers = ["送货单号", "厂内编号", "制令单号", "数量"]
         columns = [
