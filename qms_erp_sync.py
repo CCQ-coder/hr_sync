@@ -271,6 +271,10 @@ class SyncError(RuntimeError):
     """A problem that is useful to show directly to a business user."""
 
 
+class SyncPaused(SyncError):
+    """The operator stopped a run after the last saved workbook."""
+
+
 @dataclass
 class SyncSummary:
     source_file: str
@@ -2269,6 +2273,7 @@ class QmsGatewayClient:
 
 def synchronize_database_directory(
     config: Mapping[str, Any], dry_run: bool, callback: Callable[[str], None], *, initialize: bool = False,
+    pause_event: Optional[threading.Event] = None,
 ) -> SyncSummary:
     """Commit one workbook at a time and resume after the last committed file."""
     if initialize and bool(config.get("skip_initialization", False)):
@@ -2398,7 +2403,8 @@ def synchronize_database_directory(
             if stats.raw_records % 5000 == 0:
                 callback(f"已读取 {stats.raw_records:,} 条 ERP 原始记录…")
         complete_table = source_table_name(path.name, "", False)
-        if complete_table in COMPLETE_SNAPSHOT_TABLES and not raw_keys.get(complete_table):
+        if (complete_table in COMPLETE_SNAPSHOT_TABLES and not raw_keys.get(complete_table)
+                and (initialize or file_state)):
             raise SyncError(f"完整导出 {relative_file} 没有有效数据；已停止导入和删除。")
         flush_raw_records()
         membership = {
@@ -2481,16 +2487,26 @@ def synchronize_database_directory(
         label = "初始化数据" if group.role == "initialization" else "增量数据"
         callback(f"开始处理{label}目录：{group.directory}")
         for file_index, path in enumerate(group.files):
+            if pause_event is not None and pause_event.is_set():
+                raise SyncPaused("同步已暂停；已提交文件的断点已保存。点击“开始同步”继续。")
             file_key = source_file_state_key(group.role, group.directory, path)
             relative_file = path.relative_to(group.directory).as_posix()
             try:
                 checkpoint = source_file_checkpoint(path)
             except OSError as exc:
                 raise SyncError(f"无法读取源文件 {relative_file}：{exc}") from exc
+            table = source_table_name(path.name, "", False)
+            older_complete = (table in COMPLETE_SNAPSHOT_TABLES
+                              and last_complete_file[table] != (group.role, path))
             if dry_run:
-                process_file(group, path, None)
+                if older_complete:
+                    callback(f"跳过较早的完整清单：{relative_file}；以最新文件为准。")
+                    continue
+                file_state, _ = process_file(group, path, None)
                 if source_file_checkpoint(path) != checkpoint:
                     raise SyncError(f"源文件处理期间发生覆盖：{relative_file}；请重试。")
+                if not file_state:
+                    callback(f"跳过没有有效数据的 Excel：{relative_file}；保留已有记录。")
                 continue
 
             assert client is not None
@@ -2499,19 +2515,26 @@ def synchronize_database_directory(
             try:
                 try:
                     with connection.cursor() as cursor:
-                        file_state, membership = process_file(group, path, cursor)
+                        file_state, membership = ({}, {}) if older_complete else process_file(group, path, cursor)
                         if source_file_checkpoint(path) != checkpoint:
                             raise SyncError(f"源文件处理期间发生覆盖：{relative_file}；请重试。")
-                        removed = removed_file_membership(next_state, file_key, membership)
-                        table = source_table_name(path.name, "", False)
-                        if table in COMPLETE_SNAPSHOT_TABLES | PARTIAL_EXPORT_TABLES:
-                            removed["raw"].pop(table, None)
-                        if last_complete_file.get(table) == (group.role, path):
-                            deleted_for_file, deleted_keys_for_file = client._delete_missing_snapshot_rows(
-                                cursor, table, set(membership["raw"][table]),
-                            )
-                            deleted += deleted_for_file
-                        deactivated_for_file = client._deactivate_removed_file_records(cursor, removed)
+                        if older_complete or not file_state:
+                            if older_complete:
+                                callback(f"跳过较早的完整清单：{relative_file}；以最新文件为准。")
+                            else:
+                                callback(f"跳过没有有效数据的 Excel：{relative_file}；保留已有记录。")
+                            membership = parse_file_membership(next_state.get(file_membership_state_key(file_key), ""))
+                            deactivated_for_file = 0
+                        else:
+                            removed = removed_file_membership(next_state, file_key, membership)
+                            if table in COMPLETE_SNAPSHOT_TABLES | PARTIAL_EXPORT_TABLES:
+                                removed["raw"].pop(table, None)
+                            if last_complete_file.get(table) == (group.role, path):
+                                deleted_for_file, deleted_keys_for_file = client._delete_missing_snapshot_rows(
+                                    cursor, table, set(membership["raw"][table]),
+                                )
+                                deleted += deleted_for_file
+                            deactivated_for_file = client._deactivate_removed_file_records(cursor, removed)
                     connection.commit()
                 except Exception as exc:
                     try:
@@ -2597,12 +2620,14 @@ def synchronize_database_directory(
 
 def synchronize(
     config: Mapping[str, Any], dry_run: bool, callback: Optional[Callable[[str], None]] = None,
-    *, initialize: bool = False,
+    *, initialize: bool = False, pause_event: Optional[threading.Event] = None,
 ) -> SyncSummary:
     callback = callback or (lambda message: None)
     sync_mode = str(config.get("sync_mode", "database")).strip().lower()
     if sync_mode == "database":
-        return synchronize_database_directory(config, dry_run, callback, initialize=initialize)
+        return synchronize_database_directory(
+            config, dry_run, callback, initialize=initialize, pause_event=pause_event,
+        )
     if sync_mode != "api":
         raise SyncError("同步方式无效。请选择“数据库直连”或“QMS 接口”。")
     raise SyncError(
@@ -2618,6 +2643,8 @@ class SyncApplication(ttk.Frame):
         self.config_values = dict(initial_config)
         self.events: "queue.Queue[Tuple[str, Any]]" = queue.Queue()
         self.running = False
+        self.pause_event = threading.Event()
+        self._monitor_paused = False
         self.directory_monitor: Optional[DirectoryChangeMonitor] = None
         self._monitor_generation = 0
         self._build()
@@ -2681,10 +2708,16 @@ class SyncApplication(ttk.Frame):
         self.save_button = ttk.Button(controls, text="保存配置", command=self._save_configuration)
         self.test_button = ttk.Button(controls, text="测试数据库连接", command=self._test_connection)
         self.sync_button = ttk.Button(controls, text="开始同步", command=self._run_sync)
+        self.pause_button = ttk.Button(
+            controls, text="暂停同步", command=self._request_pause, state="disabled",
+        )
         self.initialize_button = ttk.Button(
             controls, text="清空并重新初始化", command=lambda: self._run_sync(initialize=True),
         )
-        for button in (self.save_button, self.test_button, self.sync_button, self.initialize_button):
+        for button in (
+            self.save_button, self.test_button, self.sync_button,
+            self.pause_button, self.initialize_button,
+        ):
             button.pack(side="left", padx=(0, 8))
 
         self.progress = ttk.Progressbar(self, mode="indeterminate")
@@ -2752,7 +2785,7 @@ class SyncApplication(ttk.Frame):
         except Exception as exc:
             messagebox.showerror("连接失败", str(exc))
 
-    def _set_running(self, value: bool) -> None:
+    def _set_running(self, value: bool, *, initialize: bool = False) -> None:
         self.running = value
         state = "disabled" if value else "normal"
         for button in (
@@ -2762,10 +2795,21 @@ class SyncApplication(ttk.Frame):
             self.save_button, self.test_button, self.sync_button, self.initialize_button,
         ):
             button.configure(state=state)
+        self.pause_button.configure(state="normal" if value and not initialize else "disabled")
         if value:
             self.progress.start(12)
         else:
             self.progress.stop()
+
+    def _request_pause(self) -> None:
+        if not self.running or self.pause_event.is_set():
+            return
+        self.pause_event.set()
+        self._monitor_paused = True
+        self.pause_button.configure(state="disabled")
+        message = "已请求暂停；处理完当前文件并保存断点后停止。"
+        self.status_var.set(message)
+        self._write_log(message)
 
     def _auto_monitor_changed(self) -> None:
         try:
@@ -2808,7 +2852,7 @@ class SyncApplication(ttk.Frame):
                 self.directory_monitor = DirectoryChangeMonitor(
                     source_directory, str(config.get("last_source_fingerprint", "")),
                 )
-            if not self.running and self.directory_monitor.has_changed():
+            if not self.running and not self._monitor_paused and self.directory_monitor.has_changed():
                 self._write_log("检测到 ERP Excel 目录变更，开始自动增量同步…")
                 self._run_sync(automatic=True, source_fingerprint=self.directory_monitor.capture_sync_start())
         except Exception as exc:
@@ -2854,16 +2898,21 @@ class SyncApplication(ttk.Frame):
             "再导入初始化及增量目录。该操作无法撤销，是否继续？",
         ):
             return
-        self._set_running(True)
+        self.pause_event = threading.Event()
+        self._monitor_paused = False
+        self._set_running(True, initialize=initialize)
         self.status_var.set(("自动" if automatic else "手动") + "同步正在运行，请勿关闭窗口。")
         self._write_log("开始" + ("自动" if automatic else "手动") + "同步…")
 
         def worker() -> None:
             try:
                 result = synchronize(
-                    config, False, lambda text: self.events.put(("log", text)), initialize=initialize,
+                    config, False, lambda text: self.events.put(("log", text)),
+                    initialize=initialize, pause_event=self.pause_event,
                 )
                 self.events.put(("done", (result, automatic, source_fingerprint)))
+            except SyncPaused as exc:
+                self.events.put(("paused", str(exc)))
             except Exception as exc:
                 self.events.put(("error", (str(exc), traceback.format_exc(), automatic)))
 
@@ -2878,6 +2927,8 @@ class SyncApplication(ttk.Frame):
                     self.status_var.set(str(value))
                 elif event == "done":
                     result, automatic, source_fingerprint = value
+                    if not self.pause_event.is_set():
+                        self._monitor_paused = False
                     self._record_successful_snapshot(source_fingerprint)
                     message = (
                         f"{'自动' if automatic else '手动'}同步完成：遍历 {result.source_files:,} 个文件、"
@@ -2887,11 +2938,17 @@ class SyncApplication(ttk.Frame):
                         f"新增 {result.added:,}，修改 {result.updated:,}，未变 {result.unchanged:,}，"
                         f"停用 {result.deactivated:,}，删除 {result.deleted:,}。"
                     )
+                    if self.pause_event.is_set():
+                        message += " 自动监控已暂停；点击“开始同步”恢复。"
                     self._write_log(message)
                     self.status_var.set(message)
                     self._set_running(False)
                     if not automatic:
                         messagebox.showinfo(APP_NAME, message)
+                elif event == "paused":
+                    self._write_log(str(value))
+                    self.status_var.set(str(value))
+                    self._set_running(False)
                 elif event == "error":
                     message, details, automatic = value
                     self._write_log("失败：" + message)
