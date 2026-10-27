@@ -39,7 +39,7 @@ class FileResumeTests(unittest.TestCase):
             def _connect(self):
                 return Connection()
 
-            def _clear_target_tables(self, _cursor):
+            def _clear_target_tables(self, _cursor, _callback):
                 raise AssertionError("recovery must not clear tables")
 
             def _existing_source_tables(self, _cursor):

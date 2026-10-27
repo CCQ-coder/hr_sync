@@ -1991,13 +1991,14 @@ class QmsDatabaseClient:
             if cursor.rowcount < 500:
                 return total
 
-    def _clear_target_tables(self, cursor) -> None:
+    def _clear_target_tables(self, cursor, callback: Callable[[str], None]) -> None:
         """Delete every tenant's rows; the caller keeps this inside the import transaction."""
         self._assert_safe_clear(cursor)
-        cursor.execute("DELETE FROM `qms_production_batch`")
-        cursor.execute("DELETE FROM `qms_work_order`")
-        for table_name in sorted(self._existing_source_tables(cursor)):
+        tables = ["qms_production_batch", "qms_work_order", *sorted(self._existing_source_tables(cursor))]
+        for table_name in tables:
+            callback(f"正在清空目标表 {table_name}…")
             cursor.execute(f"DELETE FROM {self._table_name(table_name)}")
+            callback(f"目标表 {table_name} 已删除 {cursor.rowcount:,} 行（待初始化完成后提交）。")
 
     def _assert_safe_clear(self, cursor) -> None:
         targets = BUSINESS_SOURCE_TABLES | {"qms_work_order", "qms_production_batch"}
@@ -2596,7 +2597,7 @@ def synchronize_database_directory(
                 if any(source_file_checkpoint(path) != checked_files[str(path)]
                        for group in scan_groups for path in group.files):
                     raise SyncError("源文件在预检后发生变化；数据库未清空，请重试。")
-                client._clear_target_tables(cursor)
+                client._clear_target_tables(cursor, callback)
                 for group in scan_groups:
                     callback(f"开始处理{'初始化' if group.role == 'initialization' else '增量'}数据目录：{group.directory}")
                     for path in group.files:
