@@ -1536,7 +1536,7 @@ def _source_record_pair(
         return
     row_document = json.dumps(field_values or raw_data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     identity = f"{table_name}\x1f{erp_row_identity(table_name, field_values or raw_data)}"
-    if table_name in ("qms_customer_order", "qms_delivery_note", "qms_completion_quantity", "qms_scrap"):
+    if table_name in ("qms_customer_order", "qms_purchase_order", "qms_delivery_note", "qms_completion_quantity", "qms_scrap"):
         ordinals = source_row_ordinals if source_row_ordinals is not None else {}
         ordinal = ordinals.get(identity, 0) + 1
         ordinals[identity] = ordinal

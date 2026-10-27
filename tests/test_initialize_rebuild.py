@@ -119,6 +119,47 @@ class SourceIdentityTests(unittest.TestCase):
         self.assertNotEqual(first.row_hash, changed.row_hash)
         self.assertNotEqual(first.source_key, other_line.source_key)
 
+    def test_purchase_order_repeated_material_keeps_each_occurrence(self):
+        headers = ["采购单号", "原料编号", "数量", "单价", "交货日期"]
+        columns = [
+            "erp_purchase_order_no", "erp_material_no", "erp_quantity",
+            "erp_unit_price", "erp_delivery_date",
+        ]
+        registry = sync.ErpFieldRegistry(
+            sync.ErpFieldDefinition(
+                "qms_purchase_order", "采购订单资料.xlsx", "Test", header, header,
+                column, sync.legacy_database_column_name(header),
+                sync.erp_column_comment(header), index,
+            ) for index, (header, column) in enumerate(zip(headers, columns), 1)
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            exports = []
+            for day, rows in (
+                ("baseline", ((10, 2, "2026-10-26"), (20, 3, "2026-10-27"))),
+                ("daily", ((11, 2, "2026-10-28"), (21, 4, "2026-10-29"))),
+            ):
+                folder = root / day
+                folder.mkdir()
+                path = folder / "采购订单资料.xlsx"
+                workbook = Workbook()
+                workbook.active.title = "Test"
+                workbook.active.append(headers)
+                for quantity, price, date in rows:
+                    workbook.active.append(["KS2504059", "GB10002353", quantity, price, date])
+                workbook.save(path)
+                workbook.close()
+                with patch.object(sync, "load_erp_field_registry", return_value=registry):
+                    exports.append([record for record, _ in sync.iter_all_source_records(
+                        {}, lambda _: None, sync.SourceScanStats(),
+                        source_directory=root, selected_files=(path,),
+                    )])
+
+        baseline, daily = exports
+        self.assertEqual(2, len({row.source_key for row in baseline}))
+        self.assertEqual([row.source_key for row in baseline], [row.source_key for row in daily])
+        self.assertNotEqual(baseline[0].row_hash, daily[0].row_hash)
+
     def test_customer_order_occurrences_keep_identical_rows_and_match_later_exports(self):
         class Registry:
             def canonical_headers_for(self, _source_file, headers):
