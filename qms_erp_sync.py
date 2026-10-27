@@ -1985,8 +1985,29 @@ class QmsDatabaseClient:
         tables = ["qms_production_batch", "qms_work_order", *sorted(self._existing_source_tables(cursor))]
         for table_name in tables:
             callback(f"正在清空目标表 {table_name}…")
-            cursor.execute(f"DELETE FROM {self._table_name(table_name)}")
-            callback(f"目标表 {table_name} 已删除 {cursor.rowcount:,} 行（待初始化完成后提交）。")
+            table = self._table_name(table_name)
+            deleted = 0
+            last_id = None
+            while True:
+                if last_id is None:
+                    cursor.execute(f"SELECT `id` FROM {table} ORDER BY `id` LIMIT 2000 FOR UPDATE")
+                else:
+                    cursor.execute(
+                        f"SELECT `id` FROM {table} WHERE `id` > %s ORDER BY `id` LIMIT 2000 FOR UPDATE",
+                        (last_id,),
+                    )
+                ids = [row[0] for row in cursor.fetchall()]
+                if not ids:
+                    break
+                cursor.execute(
+                    f"DELETE FROM {table} WHERE `id` IN ({', '.join(['%s'] * len(ids))})",
+                    tuple(ids),
+                )
+                deleted += cursor.rowcount
+                last_id = ids[-1]
+                if len(ids) == 2000:
+                    callback(f"目标表 {table_name} 已删除 {deleted:,} 行（待初始化完成后提交）…")
+            callback(f"目标表 {table_name} 已删除 {deleted:,} 行（待初始化完成后提交）。")
 
     def _assert_safe_clear(self, cursor) -> None:
         targets = BUSINESS_SOURCE_TABLES | {"qms_work_order", "qms_production_batch"}
@@ -1997,7 +2018,8 @@ class QmsDatabaseClient:
             f"WHERE table_schema = DATABASE() AND table_name IN ({placeholders})",
             tuple(names),
         )
-        unsafe = [name for name, engine in cursor.fetchall() if str(engine).upper() != "INNODB"]
+        existing = cursor.fetchall()
+        unsafe = [name for name, engine in existing if str(engine).upper() != "INNODB"]
         if unsafe:
             raise SyncError("目标表不是 InnoDB，无法保证初始化失败后回滚：" + ", ".join(unsafe))
         cursor.execute(
@@ -2010,6 +2032,18 @@ class QmsDatabaseClient:
         dependents = [name for (name,) in cursor.fetchall()]
         if dependents:
             raise SyncError("有范围外的表引用目标表，初始化可能级联删除：" + ", ".join(dependents))
+        cursor.execute(
+            f"SELECT table_name, column_name FROM information_schema.key_column_usage "
+            f"WHERE table_schema = DATABASE() AND table_name IN ({placeholders}) "
+            "AND constraint_name = 'PRIMARY' ORDER BY table_name, ordinal_position",
+            tuple(names),
+        )
+        primary_columns: Dict[str, List[str]] = {}
+        for table_name, column_name in cursor.fetchall():
+            primary_columns.setdefault(table_name, []).append(str(column_name).lower())
+        invalid = [name for name, _ in existing if primary_columns.get(name) != ["id"]]
+        if invalid:
+            raise SyncError("目标表必须以非空 id 为单列主键，无法安全分批清空：" + ", ".join(invalid))
 
     def _source_records_for_file(
         self, cursor, table_name: str, relative_file: str, absolute_file: str,
@@ -2452,6 +2486,8 @@ def synchronize_database_directory(
                 if any(source_file_checkpoint(path) != checked_files[str(path)]
                        for group in scan_groups for path in group.files):
                     raise SyncError("源文件在预检后发生变化；数据库未清空，请重试。")
+                # FOR UPDATE needs next-key gap locks to keep new rows out of scanned ranges.
+                cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
                 client._clear_target_tables(cursor, callback)
                 for group in scan_groups:
                     callback(f"开始处理{'初始化' if group.role == 'initialization' else '增量'}数据目录：{group.directory}")

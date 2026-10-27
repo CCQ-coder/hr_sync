@@ -584,6 +584,9 @@ class ResumeTests(unittest.TestCase):
             def commit(self):
                 events.append("commit")
 
+            def execute(self, statement):
+                events.append(statement)
+
             def rollback(self):
                 events.append("rollback")
 
@@ -617,7 +620,9 @@ class ResumeTests(unittest.TestCase):
                 with self.assertRaisesRegex(sync.SyncError, "完整导出.*没有有效数据"):
                     sync.synchronize_database_directory(config, False, lambda _: None, initialize=True)
                 self.assertFalse((root / "state.json").exists())
-        self.assertEqual(["commit", "clear", "rollback"], events)
+        self.assertEqual([
+            "commit", "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ", "clear", "rollback",
+        ], events)
 
     def test_failed_latest_snapshot_is_replayed_after_older_file_checkpoint(self) -> None:
         events = []
