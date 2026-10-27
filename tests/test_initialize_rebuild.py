@@ -253,6 +253,28 @@ class InitializationPlanTests(unittest.TestCase):
             client._clear_target_tables(external_reference, lambda _: None)
         self.assertFalse(any("DELETE FROM" in sql for sql in external_reference.statements))
 
+    def test_clear_rejects_tables_without_a_single_nonnull_id_primary_key(self):
+        class Cursor:
+            def __init__(self, primary_columns):
+                self.answers = iter(([("qms_material", "InnoDB")], [], primary_columns))
+                self.statements = []
+                self.rowcount = 0
+
+            def execute(self, statement, *_args):
+                self.statements.append(statement)
+
+            def fetchall(self):
+                return next(self.answers)
+
+        client = object.__new__(sync.QmsDatabaseClient)
+        for primary_columns in ([], [("qms_material", "other")],
+                                [("qms_material", "id"), ("qms_material", "other")]):
+            with self.subTest(primary_columns=primary_columns):
+                cursor = Cursor(primary_columns)
+                with self.assertRaisesRegex(sync.SyncError, "id.*主键"):
+                    client._clear_target_tables(cursor, lambda _: None)
+                self.assertFalse(any("DELETE FROM" in sql for sql in cursor.statements))
+
     def test_missing_or_legacy_state_enters_recovery_without_clearing(self):
         for old_state in ({}, {"raw:old-key": "old-hash"}):
             with self.subTest(old_state=old_state), \
@@ -276,27 +298,55 @@ class InitializationPlanTests(unittest.TestCase):
     def test_clear_deletes_both_qms_tables_and_every_existing_source_table(self):
         statements = []
         progress = []
+        rows = {
+            "`qms_production_batch`": [f"{number:04d}" for number in range(5)],
+            "`qms_work_order`": [f"{number:04d}" for number in range(12)],
+            "`qms_customer_order`": [],
+            "`qms_material`": [f"{number:04d}" for number in range(2002)],
+        }
 
         class Cursor:
-            def execute(self, statement):
-                statements.append(statement)
-                self.rowcount = {
-                    "`qms_production_batch`": 5,
-                    "`qms_work_order`": 12,
-                    "`qms_customer_order`": 0,
-                    "`qms_material`": 200,
-                }[statement.split("FROM ")[1]]
+            def execute(self, statement, parameters=()):
+                statements.append((statement, parameters))
+                table = statement.split("FROM ")[1].split()[0]
+                if statement.startswith("SELECT"):
+                    lower = parameters[0] if parameters else None
+                    self.selected = [row for row in rows[table] if lower is None or row > lower][:2000]
+                    return
+                if not parameters:
+                    raise AssertionError("unbounded DELETE")
+                if "WHERE `id` IN" not in statement or statement.count("%s") != len(parameters):
+                    raise AssertionError("DELETE must target the selected primary keys")
+                selected = set(parameters)
+                remaining = [row for row in rows[table] if row not in selected]
+                self.rowcount = len(rows[table]) - len(remaining)
+                rows[table] = remaining
+
+            def fetchall(self):
+                return [(row,) for row in self.selected]
 
         client = object.__new__(sync.QmsDatabaseClient)
         with patch.object(client, "_existing_source_tables", return_value={"qms_material", "qms_customer_order"}), \
                 patch.object(client, "_assert_safe_clear"):
             client._clear_target_tables(Cursor(), progress.append)
-        self.assertEqual([
-            "DELETE FROM `qms_production_batch`",
-            "DELETE FROM `qms_work_order`",
-            "DELETE FROM `qms_customer_order`",
-            "DELETE FROM `qms_material`",
-        ], statements)
+        self.assertTrue(all(not table_rows for table_rows in rows.values()))
+        material_calls = [call for call in statements if "`qms_material`" in call[0]]
+        self.assertEqual(5, len(material_calls))
+        self.assertEqual(
+            ("SELECT `id` FROM `qms_material` ORDER BY `id` LIMIT 2000 FOR UPDATE", ()),
+            material_calls[0],
+        )
+        self.assertEqual(("0000", "1999"), (material_calls[1][1][0], material_calls[1][1][-1]))
+        self.assertEqual(2000, len(material_calls[1][1]))
+        self.assertEqual(
+            ("SELECT `id` FROM `qms_material` WHERE `id` > %s ORDER BY `id` LIMIT 2000 FOR UPDATE", ("1999",)),
+            material_calls[2],
+        )
+        self.assertEqual(("2000", "2001"), material_calls[3][1])
+        self.assertEqual(
+            ("SELECT `id` FROM `qms_material` WHERE `id` > %s ORDER BY `id` LIMIT 2000 FOR UPDATE", ("2001",)),
+            material_calls[4],
+        )
         self.assertEqual([
             "正在清空目标表 qms_production_batch…",
             "目标表 qms_production_batch 已删除 5 行（待初始化完成后提交）。",
@@ -305,7 +355,8 @@ class InitializationPlanTests(unittest.TestCase):
             "正在清空目标表 qms_customer_order…",
             "目标表 qms_customer_order 已删除 0 行（待初始化完成后提交）。",
             "正在清空目标表 qms_material…",
-            "目标表 qms_material 已删除 200 行（待初始化完成后提交）。",
+            "目标表 qms_material 已删除 2,000 行（待初始化完成后提交）…",
+            "目标表 qms_material 已删除 2,002 行（待初始化完成后提交）。",
         ], progress)
 
     def test_failed_rebuild_rolls_back_the_table_clear(self):
@@ -323,6 +374,9 @@ class InitializationPlanTests(unittest.TestCase):
 
             def commit(self):
                 events.append("commit")
+
+            def execute(self, statement):
+                events.append(statement)
 
             def rollback(self):
                 events.append("rollback")
@@ -369,7 +423,10 @@ class InitializationPlanTests(unittest.TestCase):
                     patch.object(sync, "save_state") as save_state:
                 with self.assertRaisesRegex(sync.SyncError, "write failed"):
                     sync.synchronize_database_directory(config, False, lambda _: None, initialize=True)
-            self.assertEqual(["schema", "commit", "clear", "rollback"], events)
+            self.assertEqual([
+                "schema", "commit", "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ",
+                "clear", "rollback",
+            ], events)
             save_state.assert_not_called()
 
     def test_closed_connection_during_rebuild_reports_original_error(self):
@@ -386,6 +443,9 @@ class InitializationPlanTests(unittest.TestCase):
                 return False
 
             def commit(self):
+                pass
+
+            def execute(self, _statement):
                 pass
 
             def rollback(self):
