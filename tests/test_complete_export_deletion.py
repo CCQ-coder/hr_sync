@@ -400,6 +400,7 @@ class CompleteExportDeletionTests(unittest.TestCase):
         deleted = client._delete_missing_snapshot_rows(cursor, "qms_material", {"ERP5:A"})
         self.assertEqual((1, ["ERP5:B"]), deleted)
         self.assertEqual(("tenant-a",), cursor.calls[0][1])
+        self.assertIn("FORCE INDEX (`uq_427354425f7dfe1e_source`)", cursor.calls[0][0])
         self.assertIn("source_key` LIKE 'ERP5:%'", cursor.calls[0][0])
         self.assertIn("DELETE FROM `qms_material`", cursor.calls[1][0])
         self.assertIn("`tenant_code` = 'tenant-a'", cursor.calls[1][0])

@@ -164,6 +164,7 @@ class SourceIdentityTests(unittest.TestCase):
         )
         self.assertEqual((1, ["ERP5:B"]), (changed, missing))
         self.assertEqual(2, len(cursor.calls))
+        self.assertIn("FORCE INDEX (`uq_427354425f7dfe1e_source`)", cursor.calls[0][0])
         statement, parameters = cursor.calls[1]
         self.assertIn("SET `status` = 'INACTIVE'", statement)
         self.assertNotIn("DELETE", statement)
