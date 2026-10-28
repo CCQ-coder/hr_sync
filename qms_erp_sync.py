@@ -1967,8 +1967,9 @@ class QmsDatabaseClient:
         ):
             raise SyncError(f"完整导出来源键无效，已停止删除：{table_name}")
         table = self._table_name(table_name)
+        source_index = f"uq_{hashlib.sha256(table_name.encode('utf-8')).hexdigest()[:16]}_source"
         cursor.execute(
-            f"SELECT `source_key` FROM {table} "
+            f"SELECT `source_key` FROM {table} FORCE INDEX (`{source_index}`) "
             "WHERE `tenant_code` = %s AND `source_key` LIKE 'ERP5:%%'",
             (self.tenant,),
         )

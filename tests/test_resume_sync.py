@@ -87,6 +87,7 @@ class FileCheckpointTests(unittest.TestCase):
             def assert_select(self, statement, parameters):
                 assert "`tenant_code` = %s" in statement
                 assert "`source_key` LIKE 'ERP5:%%'" in statement
+                assert "FORCE INDEX (`uq_427354425f7dfe1e_source`)" in statement
                 assert parameters == ("customer-b",)
 
             def assert_delete(self, statement, parameters):
