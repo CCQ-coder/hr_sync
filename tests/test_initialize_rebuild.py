@@ -575,6 +575,25 @@ class InitializationTests(unittest.TestCase):
         self.assertEqual(("tenant-a", selected), statements[1][1])
         self.assertEqual(("tenant-b", selected), statements[4][1])
 
+        selected_receipt = "/exports/成品入库单资料.xls"
+        rows.update({
+            "a": ("tenant-a", selected_receipt),
+            "c": ("tenant-b", selected_receipt),
+        })
+        statements.clear()
+        with patch.object(client, "_existing_source_tables", return_value={
+            "qms_finished_goods_receipt",
+        }), patch.object(client, "_assert_safe_clear"):
+            client._clear_target_tables(
+                Cursor(), lambda _: None,
+                selected_tables={"qms_finished_goods_receipt"}, source_file=selected_receipt,
+            )
+        self.assertEqual({
+            "b": ("tenant-a", "/exports/补料资料.xls"),
+            "d": ("tenant-b", "/exports/补料资料.xls"),
+        }, rows)
+        self.assertTrue(all("`qms_finished_goods_receipt`" in statement for statement, _ in statements))
+
     def test_selected_partial_export_requires_source_file_before_clear(self):
         client = object.__new__(sync.QmsDatabaseClient)
         cursor = Mock()
@@ -710,6 +729,7 @@ class InitializationTests(unittest.TestCase):
         self.assertEqual("keep", saved[-1]["unrelated-checkpoint"])
         self.assertEqual("4", saved[-1][sync.SOURCE_IDENTITY_VERSION_STATE_KEY])
         self.assertEqual("pending", saved[-1][sync.COMPLETE_SNAPSHOT_VERSION_STATE_KEY])
+        self.assertEqual("1", saved[-1][sync.BASELINE_REPLAY_STATE_KEY])
         self.assertNotIn("raw:ERP5:OLD", saved[-1])
         self.assertNotIn("work-order:ERP-EXCEL:OLD", saved[-1])
         self.assertEqual("hash", saved[-1]["raw:ERP5:MAT-1"])

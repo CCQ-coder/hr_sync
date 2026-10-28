@@ -81,9 +81,11 @@ BUSINESS_SOURCE_TABLES = frozenset(
     [destination for _, destination in BUSINESS_SOURCE_TABLE_BY_FILE] + [UNCLASSIFIED_SOURCE_TABLE]
 )
 COMPLETE_SNAPSHOT_TABLES = frozenset({
-    "qms_customer_part", "qms_material", "qms_finished_goods_receipt",
+    "qms_customer_part", "qms_material",
 })
-PARTIAL_EXPORT_TABLES = frozenset({"qms_completion_quantity", "qms_scrap"})
+PARTIAL_EXPORT_TABLES = frozenset({
+    "qms_finished_goods_receipt", "qms_completion_quantity", "qms_scrap",
+})
 
 # Use ERP identifiers rather than the export's file, row, headers or mutable amounts.
 # Each inner tuple is an alternative identity, in preference order.
@@ -1982,13 +1984,6 @@ class QmsDatabaseClient:
             (self.tenant,),
         )
         existing_keys = {str(row[0]) for row in cursor.fetchall()}
-        # shortcut: block catastrophic 90% receipt shrink; review if ERP legitimately purges history.
-        if (table_name == "qms_finished_goods_receipt" and len(existing_keys) >= 100
-                and len(source_keys) * 10 < len(existing_keys)):
-            raise SyncError(
-                f"成品入库完整导出仅 {len(source_keys)} 条，数据库已有 {len(existing_keys)} 条；"
-                "疑似只导出部分数据，已停止删除并中止当前文件。请核对源文件。"
-            )
         missing = sorted(existing_keys - source_keys)
         deleted = 0
         for offset in range(0, len(missing), 500):
@@ -2639,6 +2634,9 @@ def synchronize_database_directory(
                     pass
             if selected_file is None:
                 next_state[SOURCE_IDENTITY_VERSION_STATE_KEY] = "5"
+            elif incremental:
+                # Reapply newer daily exports after restoring one older baseline workbook.
+                next_state[BASELINE_REPLAY_STATE_KEY] = "1"
 
     for group in (() if initialize and not dry_run else scan_groups):
         label = "初始化数据" if group.role == "initialization" else "增量数据"

@@ -191,6 +191,9 @@ class NewGySourcesTests(unittest.TestCase):
             def _upsert_source_records(self, *_args, **_kwargs):
                 pass
 
+            def _delete_missing_snapshot_rows(self, *_args):
+                raise AssertionError("partial export must not delete missing rows")
+
             def _deactivate_removed_file_records(self, _cursor, removed):
                 self.removed.append(removed)
                 return sum(map(len, removed["raw"].values()))
@@ -208,6 +211,7 @@ class NewGySourcesTests(unittest.TestCase):
 
         for name, table_name, expected in (
             ("采购订单资料.xls", "qms_purchase_order", {"qms_purchase_order": ["B"]}),
+            ("成品入库单资料.xls", "qms_finished_goods_receipt", {}),
             ("完成数量资料.xls", "qms_completion_quantity", {}),
             ("报废.xls", "qms_scrap", {}),
         ):
@@ -227,6 +231,33 @@ class NewGySourcesTests(unittest.TestCase):
                     path.write_bytes(b"part")
                     sync.synchronize_database_directory(config, False, lambda _: None)
                 self.assertEqual(expected, client.removed[-1]["raw"])
+
+    def test_dated_receipt_exports_are_all_imported(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            daily = root / "daily"
+            for day in ("2026-10-26", "2026-10-27"):
+                source = daily / day / "成品入库单资料.xls"
+                source.parent.mkdir(parents=True)
+                source.write_text(day)
+
+            def records(_config, _callback, stats, *, selected_files, **_kwargs):
+                path = selected_files[0]
+                stats.files_scanned += 1
+                stats.raw_records += 1
+                yield sync.RawSourceRecord(
+                    source_file=path.as_posix(), sheet_name="Test", source_row_no=2,
+                    business_key=path.parent.name, source_key=f"ERP5:{path.parent.name}",
+                    row_hash=path.parent.name, field_values={},
+                    source_table="qms_finished_goods_receipt", field_definitions={},
+                ), None
+
+            config = {"skip_initialization": True, "incremental_directory": str(daily)}
+            with patch.object(sync, "state_path", return_value=root / "state.json"), \
+                    patch.object(sync, "iter_all_source_records", side_effect=records):
+                sync.save_state({sync.SOURCE_IDENTITY_VERSION_STATE_KEY: "5"})
+                summary = sync.synchronize_database_directory(config, True, lambda _: None)
+            self.assertEqual((2, 2), (summary.source_files, summary.raw_records))
 
 
 if __name__ == "__main__":
