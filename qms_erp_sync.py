@@ -3033,8 +3033,6 @@ class SyncApplication(ttk.Frame):
                     self._write_log(message)
                     self.status_var.set(message)
                     self._set_running(False)
-                    if not automatic:
-                        messagebox.showinfo(APP_NAME, message)
                 elif event == "paused":
                     self._write_log(str(value))
                     self.status_var.set(str(value))

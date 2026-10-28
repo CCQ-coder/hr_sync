@@ -18,16 +18,21 @@ class PauseSyncTests(unittest.TestCase):
         events.put(("done", (summary, False, "fingerprint")))
         pause_event = threading.Event()
         pause_event.set()
+        logs = []
+        statuses = []
         app = SimpleNamespace(
             events=events, pause_event=pause_event, _monitor_paused=True,
-            _record_successful_snapshot=lambda _: None, _write_log=lambda _: None,
-            status_var=SimpleNamespace(set=lambda _: None),
+            _record_successful_snapshot=lambda _: None, _write_log=logs.append,
+            status_var=SimpleNamespace(set=statuses.append),
             _set_running=lambda _: None, after=lambda *_args: None,
             _drain_events=lambda: None,
         )
-        with patch.object(sync.messagebox, "showinfo"):
+        with patch.object(sync.messagebox, "showinfo") as showinfo:
             sync.SyncApplication._drain_events(app)
         self.assertTrue(app._monitor_paused)
+        self.assertIn("手动同步完成", logs[-1])
+        self.assertEqual(logs[-1], statuses[-1])
+        showinfo.assert_not_called()
 
     def test_pause_button_requests_stop_and_suspends_auto_monitor(self):
         self.assertTrue(hasattr(sync.SyncApplication, "_request_pause"))
