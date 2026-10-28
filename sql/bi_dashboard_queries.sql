@@ -653,6 +653,22 @@ FROM replenishment
 ORDER BY replenish_date DESC, replenish_no
 LIMIT 100;
 
+-- 组件：完成数量查询（最新 100 条）
+SELECT
+    `erp_completion_date_with_time` AS 完成时间,
+    `erp_production_order` AS 生产指令,
+    `erp_batch_no` AS 批号,
+    `erp_internal_product_no` AS 厂内编号,
+    `erp_barcode` AS 条形码,
+    `erp_workflow_process` AS 流程工序,
+    CAST(NULLIF(REGEXP_REPLACE(REPLACE(COALESCE(`erp_completion_quantity`, ''), ',', ''), '[^0-9.-]', ''), '') AS DECIMAL(20, 4)) AS 完成数量,
+    `erp_quantity_transfer_unit` AS 过数单位
+FROM qms_completion_quantity
+WHERE tenant_code = BINARY 'customer-b'
+  AND status = 'ACTIVE'
+ORDER BY `erp_completion_date_with_time` DESC, source_key
+LIMIT 100;
+
 -- 组件：每月成品生产面积（近 12 个月）
 WITH RECURSIVE months AS (
     SELECT DATE_SUB(DATE_FORMAT(CURDATE(), '%Y-%m-01'), INTERVAL 11 MONTH) AS month_start
