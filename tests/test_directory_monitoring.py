@@ -1,10 +1,13 @@
 """Behavioral coverage for the desktop directory monitor configuration."""
 
 import os
+import queue
 import tempfile
+import threading
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import qms_erp_sync as sync
 
@@ -138,6 +141,42 @@ class DirectoryFingerprintTests(unittest.TestCase):
 
 
 class DesktopConfigurationTests(unittest.TestCase):
+    def test_initialization_excel_chooser_sets_file_path(self) -> None:
+        selected = Mock()
+        selected.get.return_value = "D:/ERP/初始化"
+        app = SimpleNamespace(initialization_var=selected)
+        with patch.object(sync.filedialog, "askopenfilename", return_value="D:/ERP/原料资料明细.xls"):
+            sync.SyncApplication._choose_initialization_file(app)
+        selected.set.assert_called_once_with("D:/ERP/原料资料明细.xls")
+
+    def test_initialization_choosers_start_in_selected_excel_parent(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            current = Path(temporary) / "原料资料明细.xls"
+            current.write_bytes(b"source")
+            selected = Mock()
+            selected.get.return_value = str(current)
+            app = SimpleNamespace(initialization_var=selected)
+            with patch.object(sync.filedialog, "askdirectory", return_value="") as choose_directory, \
+                    patch.object(sync.filedialog, "askopenfilename", return_value="") as choose_file:
+                sync.SyncApplication._choose_initialization(app)
+                sync.SyncApplication._choose_initialization_file(app)
+            self.assertEqual(str(current.parent), choose_directory.call_args.kwargs["initialdir"])
+            self.assertEqual(str(current.parent), choose_file.call_args.kwargs["initialdir"])
+
+    def test_selected_excel_completion_does_not_mark_incremental_monitor_done(self) -> None:
+        events = queue.Queue()
+        events.put(("done", (sync.SyncSummary("selected.xls", 1, 1, 0, 0, 0, False), False, None)))
+        app = SimpleNamespace(
+            events=events, pause_event=threading.Event(), _monitor_paused=False,
+            _record_successful_snapshot=Mock(), _write_log=Mock(),
+            status_var=Mock(), _set_running=Mock(), after=Mock(), _drain_events=Mock(),
+        )
+
+        sync.SyncApplication._drain_events(app)
+
+        app._record_successful_snapshot.assert_not_called()
+
+
     def test_old_source_directory_config_migrates_to_initialization_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             target = Path(temporary) / "qms_erp_sync_config.json"

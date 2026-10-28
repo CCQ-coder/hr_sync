@@ -762,12 +762,20 @@ def build_source_scan_plan(
     latest_complete: Dict[str, Tuple[str, Path, Path]] = {}
     latest_initialization_complete: Dict[str, Path] = {}
     changed_initialization_complete: set[str] = set()
+    selected_file = False
 
     if not skip_initialization:
         if not initialization:
             raise SyncError("请选择初始化数据目录，或勾选“跳过初始化”。")
         root = Path(initialization).expanduser()
-        all_files = candidate_files(root)
+        selected_file = root.is_file()
+        if selected_file:
+            if root.suffix.casefold() not in EXCEL_SUFFIXES:
+                raise SyncError(f"初始化文件不是 Excel：{root}")
+            all_files = [root]
+            root = root.parent
+        else:
+            all_files = candidate_files(root)
         if not all_files:
             raise SyncError(f"初始化数据目录中没有 Excel 文件：{root}")
         changed = []
@@ -789,7 +797,7 @@ def build_source_scan_plan(
             initialization_changed = True
             groups.append(SourceScanGroup("initialization", root, tuple(changed)))
 
-    if incremental:
+    if incremental and not (force_all and selected_file):
         root = Path(incremental).expanduser()
         all_files = candidate_files(root)
         replay_from = 0 if (force_all or initialization_changed
@@ -1997,38 +2005,62 @@ class QmsDatabaseClient:
         )
         return {str(row[0]) for row in cursor.fetchall()}
 
-    def _clear_target_tables(self, cursor, callback: Callable[[str], None]) -> None:
-        """Delete every tenant's rows inside the full-rebuild transaction."""
-        self._assert_safe_clear(cursor)
-        tables = ["qms_production_batch", "qms_work_order", *sorted(self._existing_source_tables(cursor))]
+    def _clear_target_tables(
+        self, cursor, callback: Callable[[str], None], *,
+        selected_tables: Optional[set[str]] = None, source_file: Optional[str] = None,
+    ) -> None:
+        """Delete selected targets, optionally limiting partial exports to one file."""
+        if selected_tables is not None:
+            allowed = BUSINESS_SOURCE_TABLES | {"qms_work_order", "qms_production_batch"}
+            if not selected_tables or not selected_tables <= allowed:
+                raise SyncError("选定 Excel 的初始化目标表无效。")
+            if not source_file and any(table in BUSINESS_SOURCE_TABLES - COMPLETE_SNAPSHOT_TABLES
+                                       for table in selected_tables):
+                raise SyncError("按 Excel 初始化非完整清单时缺少来源文件，已停止清理。")
+        self._assert_safe_clear(cursor, selected_tables)
+        tables = [table for table in ("qms_production_batch", "qms_work_order")
+                  if selected_tables is None or table in selected_tables]
+        existing = self._existing_source_tables(cursor)
+        tables.extend(sorted(existing if selected_tables is None else existing & selected_tables))
         for table_name in tables:
             callback(f"正在清空目标表 {table_name}…")
             table = self._table_name(table_name)
+            file_scoped = (source_file is not None and table_name in BUSINESS_SOURCE_TABLES
+                           and table_name not in COMPLETE_SNAPSHOT_TABLES)
+            tenants = [None]
+            if file_scoped:
+                cursor.execute(f"SELECT DISTINCT `tenant_code` FROM {table}")
+                tenants = [row[0] for row in cursor.fetchall()]
             deleted = 0
-            last_id = None
-            while True:
-                if last_id is None:
-                    cursor.execute(f"SELECT `id` FROM {table} ORDER BY `id` LIMIT 2000 FOR UPDATE")
-                else:
+            for tenant in tenants:
+                where = " WHERE `tenant_code` = %s AND `source_file` = %s" if file_scoped else ""
+                scope = (tenant, source_file) if file_scoped else ()
+                last_id = None
+                while True:
+                    if last_id is None:
+                        cursor.execute(f"SELECT `id` FROM {table}{where} ORDER BY `id` LIMIT 2000 FOR UPDATE", scope)
+                    else:
+                        next_where = f"{where} AND `id` > %s" if where else " WHERE `id` > %s"
+                        cursor.execute(
+                            f"SELECT `id` FROM {table}{next_where} ORDER BY `id` LIMIT 2000 FOR UPDATE",
+                            (*scope, last_id),
+                        )
+                    ids = [row[0] for row in cursor.fetchall()]
+                    if not ids:
+                        break
                     cursor.execute(
-                        f"SELECT `id` FROM {table} WHERE `id` > %s ORDER BY `id` LIMIT 2000 FOR UPDATE",
-                        (last_id,),
+                        f"DELETE FROM {table} WHERE `id` IN ({', '.join(['%s'] * len(ids))})",
+                        tuple(ids),
                     )
-                ids = [row[0] for row in cursor.fetchall()]
-                if not ids:
-                    break
-                cursor.execute(
-                    f"DELETE FROM {table} WHERE `id` IN ({', '.join(['%s'] * len(ids))})",
-                    tuple(ids),
-                )
-                deleted += cursor.rowcount
-                last_id = ids[-1]
-                if len(ids) == 2000:
-                    callback(f"目标表 {table_name} 已删除 {deleted:,} 行（待初始化完成后提交）…")
+                    deleted += cursor.rowcount
+                    last_id = ids[-1]
+                    if len(ids) == 2000:
+                        callback(f"目标表 {table_name} 已删除 {deleted:,} 行（待初始化完成后提交）…")
             callback(f"目标表 {table_name} 已删除 {deleted:,} 行（待初始化完成后提交）。")
 
-    def _assert_safe_clear(self, cursor) -> None:
-        targets = BUSINESS_SOURCE_TABLES | {"qms_work_order", "qms_production_batch"}
+    def _assert_safe_clear(self, cursor, selected_tables: Optional[set[str]] = None) -> None:
+        targets = (selected_tables if selected_tables is not None else
+                   BUSINESS_SOURCE_TABLES | {"qms_work_order", "qms_production_batch"})
         names = sorted(targets)
         placeholders = ", ".join(["%s"] * len(names))
         cursor.execute(
@@ -2331,7 +2363,10 @@ def synchronize_database_directory(
     """Commit one workbook at a time and resume after the last committed file."""
     if initialize and bool(config.get("skip_initialization", False)):
         raise SyncError("清空并重新初始化需要选择初始化数据目录，不能勾选“跳过初始化”。")
-    loaded_state = {} if initialize else load_state()
+    initialization, incremental, _ = configured_source_directories(config)
+    initialization_path = Path(initialization).expanduser()
+    selected_file = initialization_path if initialize and initialization_path.is_file() else None
+    loaded_state = {} if initialize and selected_file is None else load_state()
     if not initialize and not dry_run and loaded_state.get(SOURCE_IDENTITY_VERSION_STATE_KEY) != "5":
         raise SyncError("来源键规则已更新；请先使用“清空并重新初始化”重建数据和断点。")
     previous = loaded_state
@@ -2343,8 +2378,9 @@ def synchronize_database_directory(
             table = source_table_name(path.name, "", False)
             if table in COMPLETE_SNAPSHOT_TABLES:
                 last_complete_file[table] = (group.role, path)
-    initialization, incremental, _ = configured_source_directories(config)
-    source_description = f"初始化={initialization or '已跳过'}；增量={incremental or '未配置'}"
+    source_description = (
+        f"初始化={initialization or '已跳过'}；增量={'本次跳过' if selected_file else incremental or '未配置'}"
+    )
     stats = SourceScanStats()
     added = updated = unchanged = written_raw = written_work_orders = deactivated = deleted = 0
     work_order_hashes: Dict[str, str] = {}
@@ -2488,6 +2524,7 @@ def synchronize_database_directory(
             # shortcut: bad data rows may leave preflight DDL behind; stage schemas if DDL rollback is required.
             callback("正在预检全部 Excel 表头并准备数据库字段；预检通过后才清空目标表。")
             fields_by_table: Dict[str, Dict[str, ErpFieldDefinition]] = {}
+            selected_tables: set[str] = set()
             checked_files: Dict[str, str] = {}
             deleted_source_keys: set[str] = set()
             latest_complete_keys: Dict[str, set[str]] = {}
@@ -2500,15 +2537,20 @@ def synchronize_database_directory(
                     checked_files[str(path)] = checkpoints[
                         source_file_state_key(group.role, group.directory, path)
                     ]
-                    for _ in iter_all_source_records(
+                    for raw, payload in iter_all_source_records(
                         config, callback, SourceScanStats(),
                         source_directory=group.directory, selected_files=(path,),
-                        headers_only=True, on_sheet=collect_sheet_fields,
+                        headers_only=selected_file is None, on_sheet=collect_sheet_fields,
                         read_path=snapshot_files[path.resolve()],
                     ):
-                        pass
+                        if raw.source_table:
+                            selected_tables.add(raw.source_table)
+                        if payload is not None:
+                            selected_tables.update(("qms_work_order", "qms_production_batch"))
                     if source_file_checkpoint(snapshot_files[path.resolve()]) != checked_files[str(path)]:
                         raise SyncError(f"文件快照预检期间发生变化：{path}；请重试。")
+            if selected_file is not None and not selected_tables:
+                raise SyncError(f"选定 Excel 没有有效数据：{selected_file}；数据库尚未清空。")
             connection = client._connect()
             try:
                 with connection.cursor() as cursor:
@@ -2524,7 +2566,14 @@ def synchronize_database_directory(
                         raise SyncError("文件快照在预检后发生变化；数据库未清空，请重试。")
                     # FOR UPDATE needs next-key gap locks to keep new rows out of scanned ranges.
                     cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
-                    client._clear_target_tables(cursor, callback)
+                    if selected_file is None:
+                        client._clear_target_tables(cursor, callback)
+                    else:
+                        # shortcut: moved exports retain old absolute paths; use full initialization after moving a file.
+                        client._clear_target_tables(
+                            cursor, callback, selected_tables=selected_tables,
+                            source_file=selected_file.resolve().as_posix(),
+                        )
                     for group in scan_groups:
                         callback(f"开始处理{'初始化' if group.role == 'initialization' else '增量'}数据目录：{group.directory}")
                         for path in group.files:
@@ -2544,6 +2593,15 @@ def synchronize_database_directory(
                             file_state[file_membership_state_key(file_key)] = json.dumps(
                                 membership, ensure_ascii=False, separators=(",", ":"),
                             )
+                            if selected_file is not None:
+                                old_membership = parse_file_membership(
+                                    next_state.get(file_membership_state_key(file_key), ""),
+                                )
+                                for keys in old_membership["raw"].values():
+                                    for key in keys:
+                                        next_state.pop(f"raw:{key}", None)
+                                for key in old_membership["work_orders"]:
+                                    next_state.pop(f"work-order:{key}", None)
                             next_state.update(file_state)
                     for table, keys in latest_complete_keys.items():
                         deleted_for_table, deleted_keys_for_table = client._delete_missing_snapshot_rows(
@@ -2571,7 +2629,8 @@ def synchronize_database_directory(
                     connection.close()
                 except Exception:
                     pass
-            next_state[SOURCE_IDENTITY_VERSION_STATE_KEY] = "5"
+            if selected_file is None:
+                next_state[SOURCE_IDENTITY_VERSION_STATE_KEY] = "5"
 
     for group in (() if initialize and not dry_run else scan_groups):
         label = "初始化数据" if group.role == "initialization" else "增量数据"
@@ -2684,7 +2743,8 @@ def synchronize_database_directory(
     else:
         if any(group.role == "incremental" for group in scan_groups):
             next_state[BASELINE_REPLAY_STATE_KEY] = "0"
-        next_state[COMPLETE_SNAPSHOT_VERSION_STATE_KEY] = "1"
+        if selected_file is None:
+            next_state[COMPLETE_SNAPSHOT_VERSION_STATE_KEY] = "1"
         try:
             save_state(next_state)
         except OSError as exc:
@@ -2757,11 +2817,15 @@ class SyncApplication(ttk.Frame):
         )
         self.status_var = tk.StringVar(value="数据库连接信息请在配置文件中维护。")
 
-        ttk.Label(self, text="初始化数据目录").grid(row=0, column=0, sticky="w", pady=(0, 8), padx=(0, 10))
+        ttk.Label(self, text="初始化数据目录/Excel").grid(row=0, column=0, sticky="w", pady=(0, 8), padx=(0, 10))
         self.initialization_entry = ttk.Entry(self, textvariable=self.initialization_var)
         self.initialization_entry.grid(row=0, column=1, sticky="ew", pady=(0, 8))
         self.initialization_button = ttk.Button(self, text="选择…", command=self._choose_initialization)
         self.initialization_button.grid(row=0, column=2, padx=(8, 0), pady=(0, 8))
+        self.initialization_file_button = ttk.Button(
+            self, text="选择 Excel…", command=self._choose_initialization_file,
+        )
+        self.initialization_file_button.grid(row=0, column=3, padx=(8, 0), pady=(0, 8))
 
         ttk.Label(self, text="增量同步目录").grid(row=1, column=0, sticky="w", pady=(0, 8), padx=(0, 10))
         self.incremental_entry = ttk.Entry(self, textvariable=self.incremental_var)
@@ -2818,8 +2882,20 @@ class SyncApplication(ttk.Frame):
         self.rowconfigure(8, weight=1)
 
     def _choose_initialization(self) -> None:
+        current = Path(self.initialization_var.get()).expanduser()
         selected = filedialog.askdirectory(
-            title="选择初始化全量数据目录", initialdir=self.initialization_var.get() or None,
+            title="选择初始化全量数据目录",
+            initialdir=str(current.parent if current.is_file() else current),
+        )
+        if selected:
+            self.initialization_var.set(selected)
+
+    def _choose_initialization_file(self) -> None:
+        current = Path(self.initialization_var.get()).expanduser()
+        selected = filedialog.askopenfilename(
+            title="选择初始化 Excel",
+            initialdir=str(current.parent if current.is_file() else current),
+            filetypes=[("Excel 文件", "*.xls *.xlsx")],
         )
         if selected:
             self.initialization_var.set(selected)
@@ -2879,7 +2955,7 @@ class SyncApplication(ttk.Frame):
         self.running = value
         state = "disabled" if value else "normal"
         for button in (
-            self.initialization_entry, self.initialization_button,
+            self.initialization_entry, self.initialization_button, self.initialization_file_button,
             self.incremental_entry, self.incremental_button, self.skip_initialization_button,
             self.auto_sync_button, self.auto_interval_input,
             self.save_button, self.test_button, self.initialize_button,
@@ -2980,18 +3056,27 @@ class SyncApplication(ttk.Frame):
                 raise SyncError("已勾选“跳过初始化”，请选择增量同步目录。")
             if initialize and skip_initialization:
                 raise SyncError("请取消“跳过初始化”，再执行清空并重新初始化。")
-            if source_fingerprint is None and incremental:
-                source_fingerprint = directory_fingerprint(Path(incremental))
-            source_fingerprint = source_fingerprint or ""
+            selected_file = initialize and Path(initialization).expanduser().is_file()
+            if selected_file:
+                source_fingerprint = None
+            else:
+                if source_fingerprint is None and incremental:
+                    source_fingerprint = directory_fingerprint(Path(incremental))
+                source_fingerprint = source_fingerprint or ""
             save_config(config)
         except Exception as exc:
             self._write_log("自动同步无法启动：" + str(exc)) if automatic else messagebox.showerror(APP_NAME, str(exc))
             return
-        if initialize and not messagebox.askyesno(
-            "确认清空全部目标表",
+        confirmation = (
+            "将清理所有租户在选定 Excel 对应目标表中的数据；完整清单和工单对应表整表清理，"
+            "其他源表按该 Excel 的当前绝对路径清理，然后仅导入该文件。"
+            "文件移动后旧路径记录不会自动识别，请在原路径操作或做完整初始化。"
+            "该操作无法撤销，是否继续？"
+            if selected_file else
             "将删除所有租户在 ERP 源数据表、qms_work_order 和 qms_production_batch 中的数据，"
-            "再导入初始化及增量目录。该操作无法撤销，是否继续？",
-        ):
+            "再导入初始化及增量目录。该操作无法撤销，是否继续？"
+        )
+        if initialize and not messagebox.askyesno("确认清空目标表", confirmation):
             return
         self.pause_event = threading.Event()
         self._monitor_paused = False
@@ -3024,7 +3109,8 @@ class SyncApplication(ttk.Frame):
                     result, automatic, source_fingerprint = value
                     if not self.pause_event.is_set():
                         self._monitor_paused = False
-                    self._record_successful_snapshot(source_fingerprint)
+                    if source_fingerprint is not None:
+                        self._record_successful_snapshot(source_fingerprint)
                     message = (
                         f"{'自动' if automatic else '手动'}同步完成：遍历 {result.source_files:,} 个文件、"
                         f"生成/核验 {result.source_tables:,} 张源表、{result.raw_records:,} 条源记录"

@@ -1,9 +1,10 @@
 """Safety checks for the explicit full rebuild."""
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 from openpyxl import Workbook
 
@@ -205,6 +206,28 @@ class SourceIdentityTests(unittest.TestCase):
 
 
 class InitializationTests(unittest.TestCase):
+    def test_selected_excel_rebuild_scans_only_that_file(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            baseline = root / "baseline"
+            daily = root / "daily"
+            baseline.mkdir()
+            daily.mkdir()
+            selected = baseline / "原料资料明细.xls"
+            selected.write_bytes(b"selected")
+            (baseline / "报废.xls").write_bytes(b"other baseline")
+            (daily / "报废.xls").write_bytes(b"incremental")
+            config = {
+                "initialization_directory": str(selected),
+                "incremental_directory": str(daily),
+            }
+
+            groups, _ = sync.build_source_scan_plan(config, {}, force_all=True)
+
+            self.assertEqual(1, len(groups))
+            self.assertEqual(baseline, groups[0].directory)
+            self.assertEqual((selected,), groups[0].files)
+
     def test_snapshot_rejects_export_replaced_during_copy(self):
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary) / "export.xls"
@@ -502,6 +525,259 @@ class InitializationTests(unittest.TestCase):
             "目标表 qms_material 已删除 2,000 行（待初始化完成后提交）…",
             "目标表 qms_material 已删除 2,002 行（待初始化完成后提交）。",
         ], progress)
+
+    def test_selected_partial_export_clears_only_its_own_file_rows(self):
+        selected = "/exports/原料出库单资料.xls"
+        rows = {
+            "a": ("tenant-a", selected),
+            "b": ("tenant-a", "/exports/补料资料.xls"),
+            "c": ("tenant-b", selected),
+            "d": ("tenant-b", "/exports/补料资料.xls"),
+        }
+        statements = []
+
+        class Cursor:
+            def execute(self, statement, parameters=()):
+                statements.append((statement, parameters))
+                if statement.startswith("SELECT DISTINCT"):
+                    self.selected = [(tenant,) for tenant in sorted({tenant for tenant, _ in rows.values()})]
+                elif statement.startswith("SELECT"):
+                    if "`tenant_code` = %s AND `source_file` = %s" not in statement:
+                        raise AssertionError("must use the existing tenant/source_file index")
+                    tenant, source = parameters[:2]
+                    last_id = parameters[2] if len(parameters) > 2 else None
+                    self.selected = [(row_id,) for row_id, values in sorted(rows.items())
+                                     if values == (tenant, source) and (last_id is None or row_id > last_id)]
+                else:
+                    self.rowcount = len(parameters)
+                    for row_id in parameters:
+                        rows.pop(row_id)
+
+            def fetchall(self):
+                return self.selected
+
+        client = object.__new__(sync.QmsDatabaseClient)
+        client.tenant = "tenant-a"
+        with patch.object(client, "_existing_source_tables", return_value={
+            "qms_material_issue", "qms_material",
+        }), patch.object(client, "_assert_safe_clear"):
+            client._clear_target_tables(
+                Cursor(), lambda _: None,
+                selected_tables={"qms_material_issue"}, source_file=selected,
+            )
+
+        self.assertEqual({
+            "b": ("tenant-a", "/exports/补料资料.xls"),
+            "d": ("tenant-b", "/exports/补料资料.xls"),
+        }, rows)
+        self.assertEqual(7, len(statements))
+        self.assertTrue(all("`qms_material_issue`" in statement for statement, _ in statements))
+        self.assertEqual(("tenant-a", selected), statements[1][1])
+        self.assertEqual(("tenant-b", selected), statements[4][1])
+
+    def test_selected_partial_export_requires_source_file_before_clear(self):
+        client = object.__new__(sync.QmsDatabaseClient)
+        cursor = Mock()
+        with patch.object(client, "_assert_safe_clear"), \
+                patch.object(client, "_existing_source_tables", return_value=set()):
+            with self.assertRaisesRegex(sync.SyncError, "来源文件"):
+                client._clear_target_tables(
+                    cursor, lambda _: None, selected_tables={"qms_material_issue"},
+                )
+        cursor.execute.assert_not_called()
+
+
+    def test_selected_complete_export_clears_whole_target_table(self):
+        statements = []
+
+        class Cursor:
+            def execute(self, statement, parameters=()):
+                statements.append((statement, parameters))
+                self.rowcount = 2
+
+            def fetchall(self):
+                if len(statements) == 1:
+                    return [("tenant-a-row",), ("tenant-b-row",)]
+                return []
+
+        client = object.__new__(sync.QmsDatabaseClient)
+        with patch.object(client, "_existing_source_tables", return_value={"qms_material"}), \
+                patch.object(client, "_assert_safe_clear"):
+            client._clear_target_tables(
+                Cursor(), lambda _: None,
+                selected_tables={"qms_material"}, source_file="/exports/原料资料明细.xls",
+            )
+
+        self.assertEqual(3, len(statements))
+        self.assertEqual((), statements[0][1])
+        self.assertNotIn("source_file", statements[0][0])
+        self.assertEqual(("tenant-a-row", "tenant-b-row"), statements[1][1])
+
+
+    def test_selected_excel_rebuild_preserves_other_state(self):
+        cleared = []
+        saved = []
+        visited = []
+
+        class Connection:
+            def cursor(self):
+                return self
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def execute(self, _statement):
+                pass
+
+            def commit(self):
+                pass
+
+            def rollback(self):
+                pass
+
+            def close(self):
+                pass
+
+        class Client:
+            def __init__(self, _config):
+                pass
+
+            def _connect(self):
+                return Connection()
+
+            def _ensure_source_table_schema(self, *_args):
+                pass
+
+            def _clear_target_tables(self, _cursor, _callback, **kwargs):
+                cleared.append(kwargs)
+
+            def _upsert_source_records(self, *_args, **_kwargs):
+                pass
+
+            def _delete_missing_snapshot_rows(self, *_args):
+                return 0, set()
+
+        def records(_config, _callback, stats, *, source_directory, selected_files,
+                    headers_only=False, on_sheet=None, read_path=None):
+            visited.append(selected_files[0])
+            stats.files_scanned += 1
+            if on_sheet is not None:
+                on_sheet("qms_material", {})
+            if headers_only:
+                return
+            stats.raw_records += 1
+            yield sync.RawSourceRecord(
+                source_file=selected_files[0].resolve().as_posix(), sheet_name="Test", source_row_no=2,
+                business_key="MAT-1", source_key="ERP5:MAT-1", row_hash="hash",
+                field_values={}, source_table="qms_material", field_definitions={},
+            ), None
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "原料资料明细.xls"
+            source.write_bytes(b"material")
+            daily = root / "daily"
+            daily.mkdir()
+            (daily / "报废.xls").write_bytes(b"scrap")
+            config = {
+                "initialization_directory": str(source), "incremental_directory": str(daily),
+            }
+            file_key = sync.source_file_state_key("initialization", root, source)
+            old_state = {
+                "unrelated-checkpoint": "keep",
+                sync.SOURCE_IDENTITY_VERSION_STATE_KEY: "4",
+                sync.COMPLETE_SNAPSHOT_VERSION_STATE_KEY: "pending",
+                sync.file_membership_state_key(file_key): json.dumps({
+                    "raw": {"qms_material": ["ERP5:OLD"]},
+                    "work_orders": ["ERP-EXCEL:OLD"], "batches": [],
+                }),
+                "raw:ERP5:OLD": "old-hash",
+                "work-order:ERP-EXCEL:OLD": "old-hash",
+            }
+            with patch.object(sync, "load_state", return_value=old_state), \
+                    patch.object(sync, "QmsDatabaseClient", Client), \
+                    patch.object(sync, "iter_all_source_records", side_effect=records), \
+                    patch.object(sync, "save_state", side_effect=lambda state: saved.append(dict(state))), \
+                    patch.object(sync, "clear_file_progress"), patch.object(sync, "log_line"):
+                sync.synchronize_database_directory(config, False, lambda _: None, initialize=True)
+
+        self.assertEqual([source, source], visited)
+        self.assertEqual({"qms_material"}, cleared[0]["selected_tables"])
+        self.assertEqual(source.resolve().as_posix(), cleared[0]["source_file"])
+        self.assertEqual("keep", saved[-1]["unrelated-checkpoint"])
+        self.assertEqual("4", saved[-1][sync.SOURCE_IDENTITY_VERSION_STATE_KEY])
+        self.assertEqual("pending", saved[-1][sync.COMPLETE_SNAPSHOT_VERSION_STATE_KEY])
+        self.assertNotIn("raw:ERP5:OLD", saved[-1])
+        self.assertNotIn("work-order:ERP-EXCEL:OLD", saved[-1])
+        self.assertEqual("hash", saved[-1]["raw:ERP5:MAT-1"])
+
+    def test_selected_production_instruction_clears_work_order_and_batch(self):
+        client = MagicMock()
+        client._upsert_work_order.return_value = "work-order-id"
+
+        def records(_config, _callback, stats, *, source_directory, selected_files,
+                    headers_only=False, on_sheet=None, read_path=None):
+            if on_sheet is not None:
+                on_sheet("qms_work_order", {})
+            if headers_only:
+                return
+            stats.raw_records += 1
+            yield sync.RawSourceRecord(
+                source_file=selected_files[0].resolve().as_posix(), sheet_name="Test", source_row_no=2,
+                business_key="WO-1", source_key="ERP5:WO-1", row_hash="hash",
+                field_values={}, source_table=None, field_definitions={},
+            ), {"sourceKey": "ERP-EXCEL:WO-1", "workOrderNo": "WO-1", "batchNo": "B-1"}
+
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "生产指示资料.xls"
+            source.write_bytes(b"production")
+            with patch.object(sync, "QmsDatabaseClient", return_value=client), \
+                    patch.object(sync, "iter_all_source_records", side_effect=records), \
+                    patch.object(sync, "save_state"), patch.object(sync, "clear_file_progress"), \
+                    patch.object(sync, "log_line"):
+                sync.synchronize_database_directory(
+                    {"initialization_directory": str(source)}, False, lambda _: None,
+                    initialize=True,
+                )
+
+        self.assertEqual(
+            {"qms_work_order", "qms_production_batch"},
+            client._clear_target_tables.call_args.kwargs["selected_tables"],
+        )
+
+
+    def test_empty_selected_excel_never_reaches_database_clear(self):
+        class Client:
+            def __init__(self, _config):
+                pass
+
+            def _connect(self):
+                raise AssertionError("empty Excel must stop before database access")
+
+        def no_records(_config, _callback, _stats, *, source_directory,
+                       selected_files, headers_only=False, on_sheet=None, read_path=None):
+            if headers_only:
+                on_sheet("qms_material", {})
+            return iter(())
+
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "原料资料明细.xls"
+            source.write_bytes(b"empty")
+            with patch.object(sync, "QmsDatabaseClient", Client), \
+                    patch.object(sync, "iter_all_source_records", side_effect=no_records), \
+                    patch.object(sync, "save_state") as save_state:
+                with self.assertRaisesRegex(sync.SyncError, "没有有效数据"):
+                    sync.synchronize_database_directory(
+                        {"initialization_directory": str(source)}, False,
+                        lambda _: None, initialize=True,
+                    )
+            save_state.assert_not_called()
+
+
+
 
     def test_old_location_key_state_requires_rebuild(self):
         with patch.object(sync, "load_state", return_value={

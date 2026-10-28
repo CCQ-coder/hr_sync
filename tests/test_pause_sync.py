@@ -18,6 +18,7 @@ class PauseSyncTests(unittest.TestCase):
         app = SimpleNamespace(
             directory_monitor=object(), _monitor_paused=False,
             initialization_entry=widget, initialization_button=widget,
+            initialization_file_button=widget,
             incremental_entry=widget, incremental_button=widget,
             skip_initialization_button=widget, auto_sync_button=widget,
             auto_interval_input=widget, save_button=widget, test_button=widget,
