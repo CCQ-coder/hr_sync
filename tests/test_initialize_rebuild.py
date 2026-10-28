@@ -217,6 +217,131 @@ class SourceIdentityTests(unittest.TestCase):
 
 
 class InitializationPlanTests(unittest.TestCase):
+    def test_xls_reader_uses_staged_file(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "原料入库单资料.XLS"
+            staged = root / "staged.XLS"
+            source.write_bytes(b"source")
+            staged.write_bytes(b"snapshot")
+            with patch.object(sync, "load_erp_field_registry", return_value=Mock()), \
+                    patch.object(sync, "open_legacy_compatible_xls", side_effect=ValueError("stop")) as opener:
+                with self.assertRaisesRegex(sync.SyncError, "无法打开 Excel"):
+                    list(sync.iter_all_source_records(
+                        {}, lambda _: None, sync.SourceScanStats(),
+                        source_directory=root, selected_files=(source,), read_path=staged,
+                    ))
+            opener.assert_called_once_with(staged)
+
+    def test_snapshot_rejects_export_replaced_during_copy(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "export.xls"
+            staged = Path(temporary) / "staged.xls"
+            source.write_bytes(b"before")
+            real_copy = sync.shutil.copyfile
+
+            def overwrite_after_copy(original, target):
+                real_copy(original, target)
+                source.write_bytes(b"after")
+
+            with patch.object(sync.shutil, "copyfile", side_effect=overwrite_after_copy):
+                with self.assertRaisesRegex(sync.SyncError, "复制期间发生覆盖.*数据库尚未清空"):
+                    sync.snapshot_source_file(source, staged)
+
+    def test_rebuild_imports_fixed_copy_when_export_changes_after_clear(self):
+        class Connection:
+            def cursor(self):
+                return self
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def execute(self, _statement):
+                pass
+
+            def commit(self):
+                pass
+
+            def rollback(self):
+                pass
+
+            def close(self):
+                pass
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source_dir = root / "baseline"
+            source_dir.mkdir()
+            source = source_dir / "其他资料.xlsx"
+
+            def write_export(value):
+                workbook = Workbook()
+                workbook.active.title = "Test"
+                workbook.active.append(["编号"])
+                workbook.active.append([value])
+                workbook.save(source)
+                workbook.close()
+
+            write_export("A")
+            first_checkpoint = sync.source_file_checkpoint(source)
+            field = sync.ErpFieldDefinition(
+                "qms_erp_unclassified", source.name, "Test", "编号", "编号",
+                "erp_no", "erp_no", "Excel列名：编号", 1,
+            )
+            schema = sync.ResolvedSourceSchema(
+                (sync.normalize_header("编号"),), False, "qms_erp_unclassified", (field,),
+            )
+
+            class Client:
+                rows = []
+                clear_calls = 0
+
+                def _connect(self):
+                    return Connection()
+
+                def _ensure_source_table_schema(self, *_args):
+                    pass
+
+                def _clear_target_tables(self, _cursor, _callback):
+                    self.clear_calls += 1
+                    write_export("B")
+
+                def _upsert_source_records(self, _cursor, _table, records, **_kwargs):
+                    self.rows.extend(records)
+
+            client = Client()
+            opened = []
+            actual_load_workbook = sync.load_workbook
+
+            def track_workbook(path, **kwargs):
+                opened.append(Path(path))
+                return actual_load_workbook(path, **kwargs)
+
+            with patch.object(sync, "state_path", return_value=root / "state.json"), \
+                    patch.object(sync, "QmsDatabaseClient", return_value=client), \
+                    patch.object(sync, "load_erp_field_registry", return_value=Mock()), \
+                    patch.object(sync, "resolve_source_schema", return_value=schema), \
+                    patch.object(sync, "load_workbook", side_effect=track_workbook):
+                sync.synchronize_database_directory(
+                    {"initialization_directory": str(source_dir)}, False,
+                    lambda _: None, initialize=True,
+                )
+                saved = sync.load_state()
+
+            file_key = sync.source_file_state_key("initialization", source_dir, source)
+            self.assertEqual(1, client.clear_calls)
+            self.assertEqual("A", client.rows[0].field_values["erp_no"])
+            self.assertEqual(source.resolve().as_posix(), client.rows[0].source_file)
+            self.assertEqual(first_checkpoint, saved[file_key])
+            self.assertNotEqual(first_checkpoint, sync.source_file_checkpoint(source))
+            self.assertEqual(2, len(opened))
+            self.assertEqual(opened[0], opened[1])
+            self.assertNotEqual(source, opened[0])
+            self.assertFalse(opened[0].exists())
+
     def test_source_table_creation_is_cached_across_record_batches(self):
         class Cursor:
             def __init__(self):
@@ -436,7 +561,7 @@ class InitializationPlanTests(unittest.TestCase):
                 raise sync.SyncError("write failed")
 
         def records(_config, _callback, stats, *, source_directory, selected_files,
-                    headers_only=False, on_sheet=None):
+                    headers_only=False, on_sheet=None, read_path=None):
             stats.files_scanned += 1
             if headers_only:
                 on_sheet("qms_material", {})

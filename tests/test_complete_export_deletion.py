@@ -71,16 +71,17 @@ class MemoryClient:
 
 
 def report_rows(_config, _callback, stats, *, source_directory, selected_files,
-                headers_only=False, on_sheet=None):
+                headers_only=False, on_sheet=None, read_path=None):
     path = selected_files[0]
+    content = (read_path or path).read_bytes()
     table = COMPLETE_REPORTS[path.name]
     stats.files_scanned += 1
     if headers_only:
         on_sheet(table, {})
         return
-    if path.read_bytes() == b"empty":
+    if content == b"empty":
         return
-    for key in (("A", "B") if "2026-10-22" in path.parts or path.read_bytes() == b"restored" else ("A",)):
+    for key in (("A", "B") if "2026-10-22" in path.parts or content == b"restored" else ("A",)):
         stats.raw_records += 1
         yield sync.RawSourceRecord(
             source_file=str(path), sheet_name="Test", source_row_no=2,
