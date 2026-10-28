@@ -26,7 +26,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Windows 测试失败。' }
           if ('${{ github.ref_name }}' -eq 'gy') {
             .\.venv\Scripts\python.exe generate_erp_field_migration.py --bi-file sql/bi_dashboard_queries.sql
-            $name = 'QMS-ERP数据同步工具-gy-英文字段版-20261028-v6'
+            $name = 'QMS-ERP数据同步工具-gy-英文字段版-20261028-v7'
           } else {
             .\.venv\Scripts\python.exe generate_erp_field_migration.py --skip-bi-validation
             $name = 'QMS-ERP数据同步工具-zsh-英文字段版-20261022'
@@ -35,6 +35,6 @@ jobs:
           .\build_exe.ps1 -Name $name
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ github.ref_name == 'gy' && 'gy-windows-release-20261028-v6' || 'zsh-windows-release-20261026-v3' }}
+          name: ${{ github.ref_name == 'gy' && 'gy-windows-release-20261028-v7' || 'zsh-windows-release-20261026-v3' }}
           path: dist/*-发布包/*
           if-no-files-found: error
