@@ -2882,9 +2882,11 @@ class SyncApplication(ttk.Frame):
             self.initialization_entry, self.initialization_button,
             self.incremental_entry, self.incremental_button, self.skip_initialization_button,
             self.auto_sync_button, self.auto_interval_input,
-            self.save_button, self.test_button, self.sync_button, self.initialize_button,
+            self.save_button, self.test_button, self.initialize_button,
         ):
             button.configure(state=state)
+        monitoring = self.directory_monitor is not None and not self._monitor_paused
+        self.sync_button.configure(state="disabled" if value or monitoring else "normal")
         self.pause_button.configure(state="normal" if value and not initialize else "disabled")
         if value:
             self.progress.start(12)
@@ -2916,14 +2918,17 @@ class SyncApplication(ttk.Frame):
         config = dict(config or self._current_config())
         if not config.get("auto_sync_enabled"):
             self.directory_monitor = None
+            self.sync_button.configure(state="normal")
             return
         _, incremental, _ = configured_source_directories(config)
         if not incremental:
             self.directory_monitor = None
+            self.sync_button.configure(state="normal")
             return
         self.directory_monitor = DirectoryChangeMonitor(
             Path(incremental), str(config.get("last_source_fingerprint", "")),
         )
+        self.sync_button.configure(state="normal" if self._monitor_paused else "disabled")
         generation = self._monitor_generation
         self.after(500, lambda: self._monitor_tick(generation))
 
