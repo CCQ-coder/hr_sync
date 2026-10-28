@@ -1981,7 +1981,15 @@ class QmsDatabaseClient:
             "WHERE `tenant_code` = %s AND `source_key` LIKE 'ERP5:%%'",
             (self.tenant,),
         )
-        missing = sorted({str(row[0]) for row in cursor.fetchall()} - source_keys)
+        existing_keys = {str(row[0]) for row in cursor.fetchall()}
+        # shortcut: block catastrophic 90% receipt shrink; review if ERP legitimately purges history.
+        if (table_name == "qms_finished_goods_receipt" and len(existing_keys) >= 100
+                and len(source_keys) * 10 < len(existing_keys)):
+            raise SyncError(
+                f"成品入库完整导出仅 {len(source_keys)} 条，数据库已有 {len(existing_keys)} 条；"
+                "疑似只导出部分数据，已停止删除并中止当前文件。请核对源文件。"
+            )
+        missing = sorted(existing_keys - source_keys)
         deleted = 0
         for offset in range(0, len(missing), 500):
             batch = missing[offset:offset + 500]

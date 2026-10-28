@@ -139,6 +139,27 @@ class FileCheckpointTests(unittest.TestCase):
         self.assertTrue(all("`source_key` LIKE 'ERP5:%'" in sql for sql in cursor.statements))
         self.assertTrue(all("`tenant_code` = 'customer-b'" in sql for sql in cursor.statements))
 
+    def test_receipt_rejects_truncated_complete_export_before_deleting_history(self) -> None:
+        class Cursor:
+            def __init__(self):
+                self.statements = []
+                self.rowcount = 0
+
+            def execute(self, statement, _parameters):
+                self.statements.append(statement)
+
+            def fetchall(self):
+                return [(f"ERP5:{index}",) for index in range(1000)]
+
+        client = object.__new__(sync.QmsDatabaseClient)
+        client.tenant = "customer-b"
+        cursor = Cursor()
+        with self.assertRaisesRegex(sync.SyncError, "仅 3 条.*已有 1000 条"):
+            client._delete_missing_snapshot_rows(
+                cursor, "qms_finished_goods_receipt", {"ERP5:0", "ERP5:1", "ERP5:2"},
+            )
+        self.assertFalse(any(statement.lstrip().startswith("DELETE") for statement in cursor.statements))
+
     def test_same_named_exports_in_different_daily_roots_have_distinct_identity(self) -> None:
         class Registry:
             def canonical_headers_for(self, _source_file, headers):
