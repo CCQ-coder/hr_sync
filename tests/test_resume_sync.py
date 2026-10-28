@@ -604,7 +604,7 @@ class ResumeTests(unittest.TestCase):
                 raise AssertionError("empty export must not delete rows")
 
         def no_records(_config, _callback, stats, *, source_directory, selected_files,
-                       headers_only=False, on_sheet=None):
+                       headers_only=False, on_sheet=None, read_path=None):
             stats.files_scanned += 1
             return iter(())
 

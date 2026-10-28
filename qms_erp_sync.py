@@ -14,7 +14,9 @@ import math
 import os
 import queue
 import re
+import shutil
 import sys
+import tempfile
 import threading
 import traceback
 import urllib.error
@@ -651,6 +653,20 @@ def source_file_checkpoint(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return f"sha256:{digest.hexdigest()}"
+
+
+def snapshot_source_file(source: Path, target: Path) -> str:
+    """Copy one stable export before a destructive rebuild starts."""
+    try:
+        before = source_file_checkpoint(source)
+        shutil.copyfile(source, target)
+        staged = source_file_checkpoint(target)
+        after = source_file_checkpoint(source)
+    except OSError as exc:
+        raise SyncError(f"无法固定源文件快照：{source}；{exc}") from exc
+    if before != staged or after != staged:
+        raise SyncError(f"源文件复制期间发生覆盖：{source}；数据库尚未清空，请重试。")
+    return staged
 
 
 def source_file_state_key(role: str, directory: Path, path: Path) -> str:
@@ -1350,6 +1366,7 @@ def iter_all_source_records(
     *, source_directory: Optional[Path] = None, selected_files: Optional[Sequence[Path]] = None,
     headers_only: bool = False,
     on_sheet: Optional[Callable[[str, Mapping[str, ErpFieldDefinition]], None]] = None,
+    read_path: Optional[Path] = None,
 ) -> Iterable[Tuple[RawSourceRecord, Optional[Dict[str, Any]]]]:
     """Traverse every Excel file and every worksheet below the configured directory.
 
@@ -1385,7 +1402,7 @@ def iter_all_source_records(
 
         if lower_name.endswith(".xlsx"):
             try:
-                workbook = load_workbook(path, read_only=True, data_only=True)
+                workbook = load_workbook(read_path or path, read_only=True, data_only=True)
             except Exception as exc:
                 raise SyncError(f"无法打开 Excel 文件 {relative_file}：{exc}") from exc
             try:
@@ -1436,7 +1453,7 @@ def iter_all_source_records(
             continue
 
         try:
-            workbook = open_erp_xls(path)
+            workbook = open_erp_xls(read_path or path)
         except Exception as exc:
             raise SyncError(f"无法打开 Excel 文件 {relative_file}：{exc}") from exc
         try:
@@ -2332,6 +2349,7 @@ def synchronize_database_directory(
     work_order_hashes: Dict[str, str] = {}
     work_order_sources: Dict[str, str] = {}
     source_tables: set[str] = set()
+    snapshot_files: Dict[Path, Path] = {}
     client = None if dry_run or not scan_groups else QmsDatabaseClient(config)
 
     if not scan_groups:
@@ -2376,8 +2394,11 @@ def synchronize_database_directory(
             pending_table = None
             pending_records = []
 
+        read_options = ({"read_path": snapshot_files[path.resolve()]}
+                        if path.resolve() in snapshot_files else {})
         for raw, payload in iter_all_source_records(
             config, callback, stats, source_directory=group.directory, selected_files=(path,),
+            **read_options,
         ):
             if raw.source_table:
                 duplicate = (raw.source_table, raw.source_key)
@@ -2451,82 +2472,105 @@ def synchronize_database_directory(
 
     if initialize and not dry_run:
         assert client is not None
-        # shortcut: bad data rows may leave preflight DDL behind; stage schemas if DDL rollback is required.
-        callback("正在预检全部 Excel 表头并准备数据库字段；预检通过后才清空目标表。")
-        fields_by_table: Dict[str, Dict[str, ErpFieldDefinition]] = {}
-        checked_files: Dict[str, str] = {}
-        deleted_source_keys: set[str] = set()
-        latest_complete_keys: Dict[str, set[str]] = {}
-
-        def collect_sheet_fields(table_name: str, fields: Mapping[str, ErpFieldDefinition]) -> None:
-            fields_by_table.setdefault(table_name, {}).update(fields)
-
-        for group in scan_groups:
-            for path in group.files:
-                checked_files[str(path)] = checkpoints[
-                    source_file_state_key(group.role, group.directory, path)
-                ]
-                for _ in iter_all_source_records(
-                    config, callback, SourceScanStats(),
-                    source_directory=group.directory, selected_files=(path,),
-                    headers_only=True, on_sheet=collect_sheet_fields,
-                ):
-                    pass
-                if source_file_checkpoint(path) != checked_files[str(path)]:
-                    raise SyncError(f"源文件预检期间发生覆盖：{path}；请重试。")
-        connection = client._connect()
-        try:
-            with connection.cursor() as cursor:
-                for table_name, fields in fields_by_table.items():
-                    if table_name == "qms_work_order":
-                        client._ensure_erp_columns(cursor, table_name, fields)
+        with tempfile.TemporaryDirectory(prefix="qms-erp-snapshot-") as snapshot_directory:
+            for group in scan_groups:
+                for path in group.files:
+                    original = path.resolve()
+                    if original not in snapshot_files:
+                        staged = Path(snapshot_directory) / f"{len(snapshot_files)}{path.suffix}"
+                        checkpoint = snapshot_source_file(path, staged)
+                        snapshot_files[original] = staged
                     else:
-                        client._ensure_source_table_schema(cursor, table_name, fields)
-            connection.commit()
-            with connection.cursor() as cursor:
-                if any(source_file_checkpoint(path) != checked_files[str(path)]
-                       for group in scan_groups for path in group.files):
-                    raise SyncError("源文件在预检后发生变化；数据库未清空，请重试。")
-                # FOR UPDATE needs next-key gap locks to keep new rows out of scanned ranges.
-                cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
-                client._clear_target_tables(cursor, callback)
-                for group in scan_groups:
-                    callback(f"开始处理{'初始化' if group.role == 'initialization' else '增量'}数据目录：{group.directory}")
-                    for path in group.files:
-                        file_key = source_file_state_key(group.role, group.directory, path)
-                        file_state, membership = process_file(group, path, cursor)
-                        if source_file_checkpoint(path) != checked_files[str(path)]:
-                            raise SyncError(f"源文件处理期间发生覆盖：{path}；数据库清理和导入已回滚。")
-                        if not file_state:
-                            callback(
-                                f"跳过没有有效数据的 Excel：{path.relative_to(group.directory).as_posix()}；"
-                                "保留此前已导入的记录。"
+                        checkpoint = source_file_checkpoint(snapshot_files[original])
+                    checkpoints[source_file_state_key(group.role, group.directory, path)] = checkpoint
+            callback(f"已固定 {len(snapshot_files):,} 个 Excel 文件快照，开始预检。")
+            # shortcut: bad data rows may leave preflight DDL behind; stage schemas if DDL rollback is required.
+            callback("正在预检全部 Excel 表头并准备数据库字段；预检通过后才清空目标表。")
+            fields_by_table: Dict[str, Dict[str, ErpFieldDefinition]] = {}
+            checked_files: Dict[str, str] = {}
+            deleted_source_keys: set[str] = set()
+            latest_complete_keys: Dict[str, set[str]] = {}
+
+            def collect_sheet_fields(table_name: str, fields: Mapping[str, ErpFieldDefinition]) -> None:
+                fields_by_table.setdefault(table_name, {}).update(fields)
+
+            for group in scan_groups:
+                for path in group.files:
+                    checked_files[str(path)] = checkpoints[
+                        source_file_state_key(group.role, group.directory, path)
+                    ]
+                    for _ in iter_all_source_records(
+                        config, callback, SourceScanStats(),
+                        source_directory=group.directory, selected_files=(path,),
+                        headers_only=True, on_sheet=collect_sheet_fields,
+                        read_path=snapshot_files[path.resolve()],
+                    ):
+                        pass
+                    if source_file_checkpoint(snapshot_files[path.resolve()]) != checked_files[str(path)]:
+                        raise SyncError(f"文件快照预检期间发生变化：{path}；请重试。")
+            connection = client._connect()
+            try:
+                with connection.cursor() as cursor:
+                    for table_name, fields in fields_by_table.items():
+                        if table_name == "qms_work_order":
+                            client._ensure_erp_columns(cursor, table_name, fields)
+                        else:
+                            client._ensure_source_table_schema(cursor, table_name, fields)
+                connection.commit()
+                with connection.cursor() as cursor:
+                    if any(source_file_checkpoint(snapshot_files[path.resolve()]) != checked_files[str(path)]
+                           for group in scan_groups for path in group.files):
+                        raise SyncError("文件快照在预检后发生变化；数据库未清空，请重试。")
+                    # FOR UPDATE needs next-key gap locks to keep new rows out of scanned ranges.
+                    cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+                    client._clear_target_tables(cursor, callback)
+                    for group in scan_groups:
+                        callback(f"开始处理{'初始化' if group.role == 'initialization' else '增量'}数据目录：{group.directory}")
+                        for path in group.files:
+                            file_key = source_file_state_key(group.role, group.directory, path)
+                            file_state, membership = process_file(group, path, cursor)
+                            if source_file_checkpoint(snapshot_files[path.resolve()]) != checked_files[str(path)]:
+                                raise SyncError(f"文件快照处理期间发生变化：{path}；数据库清理和导入已回滚。")
+                            if not file_state:
+                                callback(
+                                    f"跳过没有有效数据的 Excel：{path.relative_to(group.directory).as_posix()}；"
+                                    "保留此前已导入的记录。"
+                                )
+                            table = source_table_name(path.name, "", False)
+                            if table in COMPLETE_SNAPSHOT_TABLES and membership["raw"].get(table):
+                                latest_complete_keys[table] = set(membership["raw"][table])
+                            file_state[file_key] = checked_files[str(path)]
+                            file_state[file_membership_state_key(file_key)] = json.dumps(
+                                membership, ensure_ascii=False, separators=(",", ":"),
                             )
-                        table = source_table_name(path.name, "", False)
-                        if table in COMPLETE_SNAPSHOT_TABLES and membership["raw"].get(table):
-                            latest_complete_keys[table] = set(membership["raw"][table])
-                        file_state[file_key] = checked_files[str(path)]
-                        file_state[file_membership_state_key(file_key)] = json.dumps(
-                            membership, ensure_ascii=False, separators=(",", ":"),
+                            next_state.update(file_state)
+                    for table, keys in latest_complete_keys.items():
+                        deleted_for_table, deleted_keys_for_table = client._delete_missing_snapshot_rows(
+                            cursor, table, keys,
                         )
-                        next_state.update(file_state)
-                for table, keys in latest_complete_keys.items():
-                    deleted_for_table, deleted_keys_for_table = client._delete_missing_snapshot_rows(
-                        cursor, table, keys,
-                    )
-                    deleted += deleted_for_table
-                    deleted_source_keys.update(deleted_keys_for_table)
-            connection.commit()
-            for key in deleted_source_keys:
-                next_state.pop(f"raw:{key}", None)
-        except Exception as exc:
-            connection.rollback()
-            if isinstance(exc, MySQLError):
-                raise SyncError(f"重新初始化失败，数据库清理和导入已回滚：{exc}") from exc
-            raise
-        finally:
-            connection.close()
-        next_state[SOURCE_IDENTITY_VERSION_STATE_KEY] = "5"
+                        deleted += deleted_for_table
+                        deleted_source_keys.update(deleted_keys_for_table)
+                connection.commit()
+                for key in deleted_source_keys:
+                    next_state.pop(f"raw:{key}", None)
+            except Exception as exc:
+                try:
+                    connection.rollback()
+                except Exception as rollback_exc:
+                    raise SyncError(
+                        "重新初始化中断，数据库结果未确认；请先核查目标表，暂勿重复清空。"
+                        f"原始错误：{type(exc).__name__}: {exc}；"
+                        f"回滚错误：{type(rollback_exc).__name__}: {rollback_exc}"
+                    ) from exc
+                if isinstance(exc, MySQLError):
+                    raise SyncError(f"重新初始化失败，数据库清理和导入已回滚：{exc}") from exc
+                raise
+            finally:
+                try:
+                    connection.close()
+                except Exception:
+                    pass
+            next_state[SOURCE_IDENTITY_VERSION_STATE_KEY] = "5"
 
     for group in (() if initialize and not dry_run else scan_groups):
         label = "初始化数据" if group.role == "initialization" else "增量数据"
