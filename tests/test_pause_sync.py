@@ -6,12 +6,53 @@ import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import qms_erp_sync as sync
 
 
 class PauseSyncTests(unittest.TestCase):
+    def test_manual_start_stays_disabled_after_sync_when_monitor_is_active(self):
+        widget = Mock()
+        start_button = Mock()
+        app = SimpleNamespace(
+            directory_monitor=object(), _monitor_paused=False,
+            initialization_entry=widget, initialization_button=widget,
+            incremental_entry=widget, incremental_button=widget,
+            skip_initialization_button=widget, auto_sync_button=widget,
+            auto_interval_input=widget, save_button=widget, test_button=widget,
+            sync_button=start_button, initialize_button=widget,
+            pause_button=widget, progress=Mock(),
+        )
+
+        sync.SyncApplication._set_running(app, False)
+        start_button.configure.assert_called_with(state="disabled")
+
+        app._monitor_paused = True
+        sync.SyncApplication._set_running(app, False)
+        start_button.configure.assert_called_with(state="normal")
+
+    def test_manual_start_tracks_monitor_toggle(self):
+        with tempfile.TemporaryDirectory() as source_directory:
+            start_button = Mock()
+            app = SimpleNamespace(
+                _monitor_generation=0, _monitor_paused=False,
+                directory_monitor=None, running=False,
+                sync_button=start_button, after=Mock(),
+            )
+            config = {
+                "auto_sync_enabled": True,
+                "skip_initialization": True,
+                "incremental_directory": source_directory,
+            }
+
+            sync.SyncApplication._restart_monitor(app, config)
+            start_button.configure.assert_called_with(state="disabled")
+
+            config["auto_sync_enabled"] = False
+            sync.SyncApplication._restart_monitor(app, config)
+            start_button.configure.assert_called_with(state="normal")
+
     def test_pause_requested_during_final_file_keeps_auto_monitor_suspended(self):
         events = queue.Queue()
         summary = sync.SyncSummary("daily", 1, 1, 0, 0, 0, False)
