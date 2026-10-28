@@ -4,7 +4,7 @@ import tempfile
 import unittest
 import json
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 from openpyxl import Workbook
 from pymysql.cursors import RE_INSERT_VALUES
@@ -218,6 +218,199 @@ class SourceIdentityTests(unittest.TestCase):
 
 
 class InitializationPlanTests(unittest.TestCase):
+    def test_single_excel_rebuild_does_not_scan_incremental_directory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            selected = root / "原料出库单资料.xls"
+            selected.write_bytes(b"selected")
+            daily = root / "daily"
+            daily.mkdir()
+            (daily / "客户订单资料.xls").write_bytes(b"unrelated")
+            groups, _ = sync.build_source_scan_plan(
+                {"initialization_directory": str(selected), "incremental_directory": str(daily)},
+                {}, force_all=True, initialization_only=True,
+            )
+            self.assertEqual([("initialization", root, (selected,))], [
+                (group.role, group.directory, group.files) for group in groups
+            ])
+
+    def test_single_excel_clear_does_not_touch_other_tables(self):
+        statements = []
+
+        class Cursor:
+            rowcount = 1
+
+            def execute(self, statement, _parameters=()):
+                statements.append(statement)
+
+            def fetchall(self):
+                return [("row-1",)] if len(statements) == 1 else []
+
+        client = object.__new__(sync.QmsDatabaseClient)
+        with patch.object(client, "_assert_safe_clear"):
+            client._clear_target_tables(
+                Cursor(), lambda _: None, target_tables={"qms_material"},
+            )
+        self.assertTrue(any("DELETE FROM `qms_material`" in sql for sql in statements))
+        self.assertFalse(any("qms_work_order" in sql or "qms_customer_order" in sql
+                             for sql in statements))
+
+    def test_single_excel_clear_preserves_other_files_in_shared_table(self):
+        calls = []
+
+        class Cursor:
+            rowcount = 1
+
+            def execute(self, statement, parameters=()):
+                calls.append((statement, parameters))
+
+            def fetchall(self):
+                statement, parameters = calls[-1]
+                if "SELECT DISTINCT `tenant_code`" in statement:
+                    return [("tenant-a",), ("tenant-b",)]
+                if "SELECT `id`" in statement and parameters[0] == "tenant-b" and len(parameters) == 2:
+                    return [("selected-row",)]
+                return []
+
+        selected = Path("/tmp/原料出库单资料.xls")
+        client = object.__new__(sync.QmsDatabaseClient)
+        with patch.object(client, "_assert_safe_clear"):
+            client._clear_target_tables(
+                Cursor(), lambda _: None,
+                target_tables={"qms_material_issue"}, selected_file=selected,
+            )
+        selects = [(sql, args) for sql, args in calls if "SELECT `id`" in sql]
+        self.assertEqual({"tenant-a", "tenant-b"}, {args[0] for _, args in selects})
+        self.assertTrue(all("WHERE `tenant_code` = %s AND `source_file` = %s" in sql
+                            and args[1] == selected.resolve().as_posix() for sql, args in selects))
+        self.assertEqual([("selected-row",)], [args for sql, args in calls if "DELETE FROM" in sql])
+
+    def test_initialization_file_picker_accepts_excel(self):
+        app = Mock()
+        app.initialization_var.get.return_value = "/tmp"
+        with patch.object(sync.filedialog, "askopenfilename", return_value="/tmp/报废.xls"):
+            sync.SyncApplication._choose_initialization_file(app)
+        app.initialization_var.set.assert_called_once_with("/tmp/报废.xls")
+
+    def test_single_excel_rebuild_preserves_other_file_state_and_clears_its_table(self):
+        class Connection:
+            def cursor(self):
+                return self
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def execute(self, _statement):
+                pass
+
+            def commit(self):
+                pass
+
+            def close(self):
+                pass
+
+        class Client:
+            def __init__(self):
+                self.cleared = []
+
+            def _connect(self):
+                return Connection()
+
+            def _ensure_source_table_schema(self, *_args):
+                pass
+
+            def _clear_target_tables(self, _cursor, _callback, **scope):
+                self.cleared.append(scope)
+
+            def _upsert_source_records(self, *_args, **_kwargs):
+                pass
+
+        def records(_config, _callback, stats, *, selected_files, on_sheet=None, **_kwargs):
+            self.assertEqual(selected, selected_files[0])
+            if on_sheet:
+                on_sheet("qms_scrap", {})
+            stats.files_scanned += 1
+            stats.raw_records += 1
+            yield sync.RawSourceRecord(
+                str(selected), "Test", 2, "A", "ERP5:A", "hash", {}, "qms_scrap", {},
+            ), None
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            selected = root / "报废.xls"
+            selected.write_bytes(b"selected")
+            daily = root / "daily"
+            daily.mkdir()
+            other = daily / "客户订单资料.xls"
+            other.write_bytes(b"other")
+            other_key = sync.source_file_state_key("incremental", daily, other)
+            client = Client()
+            with patch.object(sync, "state_path", return_value=root / "state.json"), \
+                    patch.object(sync, "QmsDatabaseClient", return_value=client), \
+                    patch.object(sync, "iter_all_source_records", side_effect=records):
+                sync.save_state({other_key: sync.source_file_checkpoint(other), "raw:other": "old"})
+                summary = sync.synchronize_database_directory(
+                    {"initialization_directory": str(selected), "incremental_directory": str(daily)},
+                    False, lambda _: None, initialize=True,
+                )
+                state = sync.load_state()
+            self.assertEqual(1, summary.source_files)
+            self.assertEqual([{"target_tables": {"qms_scrap"}, "selected_file": selected}], client.cleared)
+            self.assertEqual("old", state["raw:other"])
+            self.assertEqual(sync.source_file_checkpoint(other), state[other_key])
+
+    def test_empty_single_excel_never_clears_database(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "报废.xls"
+            source.write_bytes(b"empty")
+            client = Mock()
+            with patch.object(sync, "load_state", return_value={}), \
+                    patch.object(sync, "QmsDatabaseClient", return_value=client), \
+                    patch.object(sync, "iter_all_source_records", return_value=iter(())):
+                with self.assertRaisesRegex(sync.SyncError, "没有有效数据.*尚未清空"):
+                    sync.synchronize_database_directory(
+                        {"initialization_directory": str(source)}, False,
+                        lambda _: None, initialize=True,
+                    )
+            client._connect.assert_not_called()
+
+    def test_single_production_excel_targets_work_orders_and_batches(self):
+        connection = MagicMock()
+        connection.cursor.return_value.__enter__.return_value = connection
+        client = Mock()
+        client._connect.return_value = connection
+        client._upsert_work_order.return_value = "work-order-id"
+
+        def records(_config, _callback, stats, *, on_sheet=None, **_kwargs):
+            if on_sheet:
+                on_sheet("qms_work_order", {})
+            stats.files_scanned += 1
+            stats.raw_records += 1
+            stats.work_order_records += 1
+            yield sync.RawSourceRecord(
+                "生产指示资料.xls", "Test", 2, "WO1", "ERP5:WO1", "hash", {}, None, {},
+            ), {"sourceKey": "ERP-EXCEL:WO1", "workOrderNo": "WO1", "batchNo": "B1"}
+
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "生产指示资料.xls"
+            source.write_bytes(b"work-order")
+            with patch.object(sync, "load_state", return_value={}), \
+                    patch.object(sync, "save_state"), \
+                    patch.object(sync, "clear_file_progress"), \
+                    patch.object(sync, "QmsDatabaseClient", return_value=client), \
+                    patch.object(sync, "iter_all_source_records", side_effect=records):
+                sync.synchronize_database_directory(
+                    {"initialization_directory": str(source)}, False,
+                    lambda _: None, initialize=True,
+                )
+        self.assertEqual(
+            {"qms_work_order", "qms_production_batch"},
+            client._clear_target_tables.call_args.kwargs["target_tables"],
+        )
+
     def test_xls_reader_uses_staged_file(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

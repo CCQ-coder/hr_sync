@@ -12,12 +12,24 @@ import qms_erp_sync as sync
 
 
 class PauseSyncTests(unittest.TestCase):
+    def test_selective_rebuild_does_not_mark_incremental_monitor_synchronized(self):
+        events = queue.Queue()
+        events.put(("done", (sync.SyncSummary("selected", 1, 1, 0, 0, 0, False), False, None)))
+        app = SimpleNamespace(
+            events=events, pause_event=threading.Event(), _monitor_paused=False,
+            _record_successful_snapshot=Mock(), _write_log=Mock(),
+            status_var=Mock(), _set_running=Mock(), after=Mock(), _drain_events=Mock(),
+        )
+        sync.SyncApplication._drain_events(app)
+        app._record_successful_snapshot.assert_not_called()
+
     def test_manual_start_stays_disabled_after_sync_when_monitor_is_active(self):
         widget = Mock()
         start_button = Mock()
         app = SimpleNamespace(
             directory_monitor=object(), _monitor_paused=False,
             initialization_entry=widget, initialization_button=widget,
+            initialization_file_button=widget,
             incremental_entry=widget, incremental_button=widget,
             skip_initialization_button=widget, auto_sync_button=widget,
             auto_interval_input=widget, save_button=widget, test_button=widget,
