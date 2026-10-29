@@ -2969,19 +2969,25 @@ class SyncApplication(ttk.Frame):
             button.configure(state=state)
         monitoring = self.directory_monitor is not None and not self._monitor_paused
         self.sync_button.configure(state="disabled" if value or monitoring else "normal")
-        self.pause_button.configure(state="normal" if value and not initialize else "disabled")
+        self.pause_button.configure(
+            state="normal" if not initialize and not self._monitor_paused and (value or monitoring) else "disabled"
+        )
         if value:
             self.progress.start(12)
         else:
             self.progress.stop()
 
     def _request_pause(self) -> None:
-        if not self.running or self.pause_event.is_set():
+        if self._monitor_paused or self.pause_event.is_set() or (not self.running and self.directory_monitor is None):
             return
-        self.pause_event.set()
+        if self.running:
+            self.pause_event.set()
+            message = "已请求暂停；处理完当前文件并保存断点后停止。"
+        else:
+            message = "自动监控已暂停；点击“开始同步”恢复监控。"
+            self.sync_button.configure(state="normal")
         self._monitor_paused = True
         self.pause_button.configure(state="disabled")
-        message = "已请求暂停；处理完当前文件并保存断点后停止。"
         self.status_var.set(message)
         self._write_log(message)
 
@@ -3000,17 +3006,22 @@ class SyncApplication(ttk.Frame):
         config = dict(config or self._current_config())
         if not config.get("auto_sync_enabled"):
             self.directory_monitor = None
+            self._monitor_paused = False
             self.sync_button.configure(state="normal")
+            self.pause_button.configure(state="disabled")
             return
         _, incremental, _ = configured_source_directories(config)
         if not incremental:
             self.directory_monitor = None
+            self._monitor_paused = False
             self.sync_button.configure(state="normal")
+            self.pause_button.configure(state="disabled")
             return
         self.directory_monitor = DirectoryChangeMonitor(
             Path(incremental), str(config.get("last_source_fingerprint", "")),
         )
         self.sync_button.configure(state="normal" if self._monitor_paused else "disabled")
+        self.pause_button.configure(state="disabled" if self._monitor_paused else "normal")
         generation = self._monitor_generation
         self.after(500, lambda: self._monitor_tick(generation))
 
@@ -3055,6 +3066,15 @@ class SyncApplication(ttk.Frame):
             return
         try:
             config = self._current_config()
+            if (not automatic and not initialize and self._monitor_paused
+                    and config.get("auto_sync_enabled") and self.directory_monitor is not None
+                    and not self.pause_event.is_set()):
+                self._monitor_paused = False
+                self._restart_monitor(config)
+                message = "自动监控已恢复；按设定间隔检查增量目录。"
+                self.status_var.set(message)
+                self._write_log(message)
+                return
             initialization, incremental, skip_initialization = configured_source_directories(config)
             if not skip_initialization and not initialization:
                 raise SyncError("请选择初始化数据目录，或勾选“跳过初始化”。")

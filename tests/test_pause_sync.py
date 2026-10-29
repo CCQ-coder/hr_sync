@@ -15,6 +15,7 @@ class PauseSyncTests(unittest.TestCase):
     def test_start_button_stays_disabled_while_auto_monitor_is_active(self):
         widget = Mock()
         start_button = Mock()
+        pause_button = Mock()
         app = SimpleNamespace(
             directory_monitor=object(), _monitor_paused=False,
             initialization_entry=widget, initialization_button=widget,
@@ -23,28 +24,72 @@ class PauseSyncTests(unittest.TestCase):
             skip_initialization_button=widget, auto_sync_button=widget,
             auto_interval_input=widget, save_button=widget, test_button=widget,
             sync_button=start_button, initialize_button=widget,
-            pause_button=widget, progress=Mock(),
+            pause_button=pause_button, progress=Mock(),
         )
         sync.SyncApplication._set_running(app, False)
         start_button.configure.assert_called_with(state="disabled")
+        pause_button.configure.assert_called_with(state="normal")
         app._monitor_paused = True
         sync.SyncApplication._set_running(app, False)
         start_button.configure.assert_called_with(state="normal")
+        pause_button.configure.assert_called_with(state="disabled")
+        app._monitor_paused = False
+        sync.SyncApplication._set_running(app, True, initialize=True)
+        pause_button.configure.assert_called_with(state="disabled")
+
+    def test_pause_idle_monitor_and_resume_without_starting_full_sync(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config = {
+                "auto_sync_enabled": True, "incremental_directory": temporary,
+                "skip_initialization": True,
+            }
+            start_button = Mock()
+            pause_button = Mock()
+            messages = []
+            scheduled = []
+            app = SimpleNamespace(
+                running=False, pause_event=threading.Event(), _monitor_paused=False,
+                directory_monitor=sync.DirectoryChangeMonitor(Path(temporary), "saved"),
+                _monitor_generation=0, sync_button=start_button,
+                pause_button=pause_button, status_var=SimpleNamespace(set=messages.append),
+                _write_log=messages.append, _current_config=lambda: config,
+                after=lambda delay, callback: scheduled.append((delay, callback)),
+            )
+            app._restart_monitor = lambda current=None: sync.SyncApplication._restart_monitor(app, current)
+
+            sync.SyncApplication._request_pause(app)
+            self.assertTrue(app._monitor_paused)
+            self.assertFalse(app.pause_event.is_set())
+            start_button.configure.assert_called_with(state="normal")
+            pause_button.configure.assert_called_with(state="disabled")
+
+            with patch.object(sync, "save_config", side_effect=AssertionError("resuming must not start a full sync")):
+                sync.SyncApplication._run_sync(app)
+            self.assertFalse(app._monitor_paused)
+            self.assertFalse(app.pause_event.is_set())
+            start_button.configure.assert_called_with(state="disabled")
+            pause_button.configure.assert_called_with(state="normal")
+            self.assertEqual(500, scheduled[-1][0])
 
     def test_start_button_tracks_auto_monitor_toggle(self):
         start_button = Mock()
+        pause_button = Mock()
         app = SimpleNamespace(
             _monitor_generation=0, _monitor_paused=False,
-            directory_monitor=None, sync_button=start_button,
+            directory_monitor=None, sync_button=start_button, pause_button=pause_button,
             after=Mock(),
         )
         with tempfile.TemporaryDirectory() as temporary:
             config = {"auto_sync_enabled": True, "incremental_directory": temporary}
             sync.SyncApplication._restart_monitor(app, config)
             start_button.configure.assert_called_with(state="disabled")
+            pause_button.configure.assert_called_with(state="normal")
+            app._monitor_paused = True
             config["auto_sync_enabled"] = False
             sync.SyncApplication._restart_monitor(app, config)
             start_button.configure.assert_called_with(state="normal")
+            pause_button.configure.assert_called_with(state="disabled")
+            self.assertFalse(app._monitor_paused)
 
     def test_pause_requested_during_final_file_keeps_auto_monitor_suspended(self):
         events = queue.Queue()
