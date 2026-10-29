@@ -26,6 +26,7 @@ class PauseSyncTests(unittest.TestCase):
     def test_manual_start_stays_disabled_after_sync_when_monitor_is_active(self):
         widget = Mock()
         start_button = Mock()
+        pause_button = Mock()
         app = SimpleNamespace(
             directory_monitor=object(), _monitor_paused=False,
             initialization_entry=widget, initialization_button=widget,
@@ -34,23 +35,76 @@ class PauseSyncTests(unittest.TestCase):
             skip_initialization_button=widget, auto_sync_button=widget,
             auto_interval_input=widget, save_button=widget, test_button=widget,
             sync_button=start_button, initialize_button=widget,
-            pause_button=widget, progress=Mock(),
+            pause_button=pause_button, progress=Mock(),
         )
 
         sync.SyncApplication._set_running(app, False)
         start_button.configure.assert_called_with(state="disabled")
+        pause_button.configure.assert_called_with(state="normal")
 
         app._monitor_paused = True
         sync.SyncApplication._set_running(app, False)
         start_button.configure.assert_called_with(state="normal")
+        pause_button.configure.assert_called_with(state="disabled")
+
+        app._monitor_paused = False
+        sync.SyncApplication._set_running(app, True, initialize=True)
+        pause_button.configure.assert_called_with(state="disabled")
+
+    def test_idle_monitor_can_pause_and_resume_without_starting_sync(self):
+        with tempfile.TemporaryDirectory() as source_directory:
+            config = {
+                "auto_sync_enabled": True,
+                "skip_initialization": True,
+                "incremental_directory": source_directory,
+                "last_source_fingerprint": "",
+            }
+            start_button = Mock()
+            pause_button = Mock()
+            scheduled = []
+            monitor = sync.DirectoryChangeMonitor(Path(source_directory), "")
+            self.assertFalse(monitor.has_changed())
+            app = SimpleNamespace(
+                running=False, pause_event=threading.Event(), _monitor_paused=False,
+                directory_monitor=monitor,
+                _monitor_generation=0, sync_button=start_button, pause_button=pause_button,
+                status_var=Mock(), _write_log=Mock(), _current_config=lambda: config,
+                auto_interval_var=SimpleNamespace(get=lambda: "5"),
+                after=lambda delay, callback: scheduled.append((delay, callback)),
+            )
+            app._restart_monitor = lambda current=None: sync.SyncApplication._restart_monitor(app, current)
+            app._monitor_tick = lambda generation: sync.SyncApplication._monitor_tick(app, generation)
+
+            sync.SyncApplication._request_pause(app)
+            self.assertTrue(app._monitor_paused)
+            self.assertFalse(app.pause_event.is_set())
+            start_button.configure.assert_called_with(state="normal")
+            pause_button.configure.assert_called_with(state="disabled")
+            (Path(source_directory) / "采购订单资料.xls").write_bytes(b"changed while paused")
+
+            with patch.object(sync, "save_config") as save_config:
+                sync.SyncApplication._run_sync(app)
+            save_config.assert_not_called()
+            self.assertFalse(app._monitor_paused)
+            self.assertFalse(app.pause_event.is_set())
+            start_button.configure.assert_called_with(state="disabled")
+            pause_button.configure.assert_called_with(state="normal")
+            self.assertEqual(500, scheduled[-1][0])
+            automatic_syncs = []
+            app._run_sync = lambda **kwargs: automatic_syncs.append(kwargs)
+            scheduled[-1][1]()
+            self.assertEqual(1, len(automatic_syncs))
+            self.assertTrue(automatic_syncs[0]["automatic"])
 
     def test_manual_start_tracks_monitor_toggle(self):
         with tempfile.TemporaryDirectory() as source_directory:
             start_button = Mock()
+            pause_button = Mock()
             app = SimpleNamespace(
                 _monitor_generation=0, _monitor_paused=False,
-                directory_monitor=None, running=False,
-                sync_button=start_button, after=Mock(),
+                directory_monitor=None, running=False, pause_event=threading.Event(),
+                sync_button=start_button, pause_button=pause_button, after=Mock(),
+                status_var=Mock(), _write_log=Mock(),
             )
             config = {
                 "auto_sync_enabled": True,
@@ -60,10 +114,48 @@ class PauseSyncTests(unittest.TestCase):
 
             sync.SyncApplication._restart_monitor(app, config)
             start_button.configure.assert_called_with(state="disabled")
+            pause_button.configure.assert_called_with(state="normal")
 
+            app._monitor_paused = True
+            app.pause_event.set()
             config["auto_sync_enabled"] = False
             sync.SyncApplication._restart_monitor(app, config)
             start_button.configure.assert_called_with(state="normal")
+            pause_button.configure.assert_called_with(state="disabled")
+            self.assertFalse(app._monitor_paused)
+
+            config["auto_sync_enabled"] = True
+            sync.SyncApplication._restart_monitor(app, config)
+            self.assertFalse(app.pause_event.is_set())
+            sync.SyncApplication._request_pause(app)
+            self.assertTrue(app._monitor_paused)
+
+    def test_saving_paused_monitor_keeps_unsynced_change_pending(self):
+        with tempfile.TemporaryDirectory() as source_directory:
+            directory = Path(source_directory)
+            monitor = sync.DirectoryChangeMonitor(directory, "")
+            self.assertFalse(monitor.has_changed())
+            baseline = monitor.last_successful_fingerprint
+            config = {
+                "auto_sync_enabled": True,
+                "skip_initialization": True,
+                "incremental_directory": source_directory,
+                "last_source_fingerprint": "",
+            }
+            app = SimpleNamespace(
+                running=False, pause_event=threading.Event(), _monitor_paused=False,
+                directory_monitor=monitor, _monitor_generation=0,
+                sync_button=Mock(), pause_button=Mock(), after=Mock(),
+                status_var=Mock(), _write_log=Mock(), _current_config=lambda: config,
+            )
+            app._restart_monitor = lambda current=None: sync.SyncApplication._restart_monitor(app, current)
+            sync.SyncApplication._request_pause(app)
+            (directory / "采购订单资料.xls").write_bytes(b"changed while paused")
+
+            with patch.object(sync, "save_config") as save_config:
+                sync.SyncApplication._save_configuration(app)
+            self.assertEqual(baseline, save_config.call_args.args[0]["last_source_fingerprint"])
+            self.assertTrue(app.directory_monitor.has_changed())
 
     def test_pause_requested_during_final_file_keeps_auto_monitor_suspended(self):
         events = queue.Queue()
