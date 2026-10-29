@@ -14,8 +14,11 @@ import qms_erp_sync as sync
 COMPLETE_REPORTS = {
     "客户料号资料.XLS": "qms_customer_part",
     "原料资料明细.XLS": "qms_material",
+}
+PARTIAL_REPORTS = {
     "成品入库单资料.XLS": "qms_finished_goods_receipt",
 }
+REPORTS = {**COMPLETE_REPORTS, **PARTIAL_REPORTS}
 
 
 class MemoryConnection:
@@ -43,7 +46,7 @@ class MemoryConnection:
 
 class MemoryClient:
     def __init__(self):
-        self.tables = {table: {"ERP5:A", "ERP5:B"} for table in COMPLETE_REPORTS.values()}
+        self.tables = {table: {"ERP5:A", "ERP5:B"} for table in REPORTS.values()}
         self.delete_calls = []
         self.upsert_calls = []
         self.clear_calls = 0
@@ -74,7 +77,7 @@ def report_rows(_config, _callback, stats, *, source_directory, selected_files,
                 headers_only=False, on_sheet=None, read_path=None):
     path = selected_files[0]
     content = (read_path or path).read_bytes()
-    table = COMPLETE_REPORTS[path.name]
+    table = REPORTS[path.name]
     stats.files_scanned += 1
     if headers_only:
         on_sheet(table, {})
@@ -91,6 +94,28 @@ def report_rows(_config, _callback, stats, *, source_directory, selected_files,
 
 
 class CompleteExportDeletionTests(unittest.TestCase):
+    def test_partial_finished_goods_receipts_keep_older_daily_rows(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "daily"
+            for day, content in (("2026-10-22", b"older"), ("2026-10-23", b"newer")):
+                path = source / day / "成品入库单资料.XLS"
+                path.parent.mkdir(parents=True)
+                path.write_bytes(content)
+            client = MemoryClient()
+            with patch.object(sync, "state_path", return_value=root / "state.json"), \
+                    patch.object(sync, "iter_all_source_records", side_effect=report_rows), \
+                    patch.object(sync, "QmsDatabaseClient", return_value=client):
+                sync.save_state({sync.SOURCE_IDENTITY_VERSION_STATE_KEY: "5"})
+                summary = sync.synchronize_database_directory(
+                    {"skip_initialization": True, "incremental_directory": str(source)},
+                    False, lambda _: None,
+                )
+            self.assertEqual(2, summary.source_files)
+            self.assertEqual(0, summary.deleted)
+            self.assertEqual([], client.delete_calls)
+            self.assertEqual({"ERP5:A", "ERP5:B"}, client.tables["qms_finished_goods_receipt"])
+
     def test_legacy_recovery_skips_empty_complete_export_without_changing_old_rows(self):
         class RecoveryClient(MemoryClient):
             def _upsert_source_records(self, *_args):
@@ -210,12 +235,12 @@ class CompleteExportDeletionTests(unittest.TestCase):
                     {"skip_initialization": True, "incremental_directory": str(source)},
                     False, lambda _: None,
                 )
-            self.assertEqual(3, summary.source_files)
-            self.assertEqual(3, summary.deleted)
+            self.assertEqual(2, summary.source_files)
+            self.assertEqual(2, summary.deleted)
             self.assertEqual(1, restored.added)
             self.assertEqual({"ERP5:A", "ERP5:B"}, client.tables["qms_material"])
-            self.assertTrue(all(keys == {"ERP5:A"} for table, keys in client.tables.items()
-                                if table != "qms_material"))
+            self.assertEqual({"ERP5:A"}, client.tables["qms_customer_part"])
+            self.assertEqual({"ERP5:A", "ERP5:B"}, client.tables["qms_finished_goods_receipt"])
 
     def test_empty_complete_export_skips_without_deletion_and_continues(self):
         with tempfile.TemporaryDirectory() as temporary:

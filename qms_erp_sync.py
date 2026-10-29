@@ -100,9 +100,11 @@ BUSINESS_SOURCE_TABLES = frozenset(
     [destination for _, destination in BUSINESS_SOURCE_TABLE_BY_FILE] + [UNCLASSIFIED_SOURCE_TABLE]
 )
 COMPLETE_EXPORT_TABLES = frozenset({
-    "qms_customer_part", "qms_material", "qms_finished_goods_receipt",
+    "qms_customer_part", "qms_material",
 })
-PARTIAL_EXPORT_TABLES = frozenset({"qms_completion_quantity", "qms_scrap"})
+PARTIAL_EXPORT_TABLES = frozenset({
+    "qms_finished_goods_receipt", "qms_completion_quantity", "qms_scrap",
+})
 
 # Use ERP identifiers rather than the export's file, row, headers or mutable amounts.
 # Each inner tuple is an alternative identity, in preference order.
