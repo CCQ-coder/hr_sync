@@ -517,11 +517,11 @@ class ErpFieldRegistryTests(unittest.TestCase):
         with self.assertRaises(FrozenInstanceError):
             field.database_column = "erp_changed"
 
-    def test_completion_and_scrap_fields_are_registered_without_changing_gy_layouts(self):
+    def test_completion_and_scrap_fields_are_registered_with_daily_layout(self):
         registry = sync.load_erp_field_registry(REGISTRY_PATH)
         completion = [f for f in registry.fields if f.table_name == "qms_completion_quantity"]
         scrap = [f for f in registry.fields if f.table_name == "qms_scrap"]
-        self.assertEqual((len(completion), len(scrap), len(registry.source_layouts)), (47, 23, 23))
+        self.assertEqual((len(completion), len(scrap), len(registry.source_layouts)), (47, 23, 24))
         self.assertEqual(completion[4].database_column, "erp_barcode")
         self.assertEqual(scrap[0].database_column, "erp_completion_no")
 

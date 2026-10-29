@@ -1,5 +1,6 @@
 """Completion and scrap exports keep every detail and ignore non-record rows."""
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -26,6 +27,7 @@ SCRAP_HEADERS = (
     "生产类别", "合拼厂内编号", "<因打X板>\r多报废数量", "当前板长",
     "金额2(本位币)\r层数比例", "当前尺寸", "当前板宽", "原生产指令", "责任厂商", "检查数量",
 )
+COMPLETION_DAILY_HEADERS = Path(__file__).with_name("fixtures") / "gy_completion_20261028_headers.json"
 
 
 class NewGySourcesTests(unittest.TestCase):
@@ -150,6 +152,27 @@ class NewGySourcesTests(unittest.TestCase):
                     == sync.canonical_source_file_name(name)
                     for field in registry.fields
                 ))
+
+    def test_new_completion_export_maps_all_columns(self):
+        fixture = json.loads(COMPLETION_DAILY_HEADERS.read_text(encoding="utf-8"))
+        headers = fixture["headers"]
+        registry = sync.load_erp_field_registry()
+        definitions = registry.resolve_sheet(
+            "qms_completion_quantity", "2026-10-28/完成数量资料.XLS", "Test", headers,
+        )
+        self.assertEqual(104, len(definitions))
+        self.assertEqual(104, len({field.database_column for field in definitions}))
+        self.assertEqual("erp_barcode", definitions[21].database_column)
+        self.assertEqual("erp_completion_date_with_time", definitions[37].database_column)
+        self.assertEqual("erp_completion_detail_id", definitions[41].database_column)
+        self.assertEqual("erp_customer_part_no_duplicate_2", definitions[96].database_column)
+        self.assertEqual("客户料号", definitions[5].excel_source_header)
+        self.assertEqual("客户料号", definitions[96].excel_source_header)
+        with self.assertRaisesRegex(sync.SyncError, "表头已变化"):
+            registry.resolve_sheet(
+                "qms_completion_quantity", "2026-10-28/完成数量资料.XLS", "Test",
+                ["未审核新列", *headers[1:]],
+            )
 
     def test_missing_business_id_on_detail_is_an_error(self):
         for name, table, headers, columns, row, message in (
