@@ -288,7 +288,7 @@ DECIMAL_FIELDS = {
     "bBoardWidth", "materialArea", "productionNoticeArea", "customerOrderArea",
     "estimatedYieldRate", "plannedMaterialIssueQuantity",
 }
-MAX_ESTIMATED_YIELD_RATE = Decimal("999.99")  # qms_work_order.estimated_yield_rate DECIMAL(5,2)
+MAX_ESTIMATED_YIELD_RATE = Decimal("99999999.99")  # qms_work_order.estimated_yield_rate DECIMAL(10,2)
 
 
 class SyncError(RuntimeError):
@@ -1632,7 +1632,7 @@ def _source_record_pair(
             if source_rate is not None and payload["estimatedYieldRate"] is None:
                 callback(
                     f"数据提示：{relative_file} / {sheet_name} 第 {row_no} 行“成品利用率” "
-                    f"{source_rate} 超出 QMS 字段 DECIMAL(5,2) 范围；"
+                    f"{source_rate} 超出 QMS 字段 DECIMAL(10,2) 范围；"
                     "原值已保留在 ERP 英文字段，QMS 数值字段留空。"
                 )
             # Every production-instruction header gets a queryable physical
@@ -1661,7 +1661,7 @@ def build_payload(row: Mapping[str, Any], datemode: int) -> Dict[str, Any]:
     rate = payload["estimatedYieldRate"]
     if rate is not None and abs(Decimal(rate)) > MAX_ESTIMATED_YIELD_RATE:
         # Keep the exact export value in erp_finished_goods_utilization_rate.
-        # The QMS decimal(5,2) projection cannot store it without failing the batch.
+        # The QMS decimal(10,2) projection cannot store it without failing the batch.
         payload["estimatedYieldRate"] = None
     for field in set(FIELD_MAP) - DATE_FIELDS - INTEGER_FIELDS - DECIMAL_FIELDS:
         payload[field] = as_text(source_value(row, field)) or None
