@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import runpy
 import shutil
 import subprocess
 import sys
@@ -16,6 +17,29 @@ from ini_share_sync.transfer import copy_as_txt
 
 
 class MainTests(unittest.TestCase):
+    def test_packaged_entrypoint_exits_silently_when_import_fails(self):
+        """An import failure must not open a PyInstaller error dialog."""
+        entry_point = Path(__file__).resolve().parents[1] / "run_ini_share_sync.py"
+        original_import = __import__
+
+        def fail_main_import(name, *args, **kwargs):
+            if name == "ini_share_sync.main":
+                raise ImportError("missing runtime module")
+            return original_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=fail_main_import):
+            with self.assertRaises(SystemExit) as result:
+                runpy.run_path(str(entry_point), run_name="__main__")
+        self.assertEqual(1, result.exception.code)
+
+    def test_packaged_entrypoint_exits_silently_when_logging_cannot_start(self):
+        """A windowless scheduled task must not show a PyInstaller error dialog."""
+        entry_point = Path(__file__).resolve().parents[1] / "run_ini_share_sync.py"
+        with patch("ini_share_sync.main.main", side_effect=OSError("log directory unavailable")):
+            with self.assertRaises(SystemExit) as result:
+                runpy.run_path(str(entry_point), run_name="__main__")
+        self.assertEqual(1, result.exception.code)
+
     def write_config(self, root, target_root=None):
         config_path = root / "sync_config.json"
         config_path.write_text(
@@ -184,28 +208,38 @@ class MainTests(unittest.TestCase):
     def test_task_scripts_support_safe_whatif_execution(self):
         """A script encoding or parse error would make task installation/removal unusable."""
         project_root = Path(__file__).resolve().parents[1]
-        for script_name in (
-            "install_sync_task.ps1",
-            "remove_sync_task.ps1",
-        ):
-            script_path = project_root / script_name
-            result = subprocess.run(
-                [
-                    "powershell",
-                    "-NoProfile",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-File",
-                    str(script_path),
-                    "-WhatIf",
-                ],
-                capture_output=True,
-            )
-            self.assertEqual(
-                0,
-                result.returncode,
-                result.stderr.decode("utf-8", errors="replace"),
-            )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            schtasks_path = root / "fake-schtasks.cmd"
+            marker = root / "scheduler-called.txt"
+            schtasks_path.write_text('@echo called> "%CAPTURE_ARGS%"\r\n', encoding="ascii")
+            environment = os.environ.copy()
+            environment["CAPTURE_ARGS"] = str(marker)
+            executable = project_root / "dist" / "IniShareSync.exe"
+            created_executable = not executable.exists()
+            if created_executable:
+                executable.parent.mkdir(parents=True, exist_ok=True)
+                executable.write_bytes(b"test placeholder")
+            try:
+                for script_name in ("install_sync_task.ps1", "remove_sync_task.ps1"):
+                    script_path = project_root / script_name
+                    result = subprocess.run(
+                        [
+                            "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                            "-File", str(script_path), "-SchtasksPath", str(schtasks_path),
+                            "-WhatIf",
+                        ],
+                        capture_output=True,
+                        env=environment,
+                    )
+                    self.assertEqual(
+                        0, result.returncode,
+                        result.stderr.decode("utf-8", errors="replace"),
+                    )
+                    self.assertFalse(marker.exists(), script_name)
+            finally:
+                if created_executable:
+                    executable.unlink()
 
     def test_task_scripts_create_and_remove_compatible_schtasks_jobs(self):
         """Windows 7 and XP need different schtasks command formats."""
@@ -215,16 +249,19 @@ class MainTests(unittest.TestCase):
             schtasks_path = temporary_root / "fake-schtasks.cmd"
             captured_args = temporary_root / "schtasks-args.txt"
             captured_xml = temporary_root / "task.xml"
+            captured_status_xml = temporary_root / "status-task.xml"
             schtasks_path.write_text(
                 "@echo off\r\n"
                 "echo %*>> \"%CAPTURE_ARGS%\"\r\n"
-                "if /I \"%~1\"==\"/Create\" copy /Y \"%~5\" \"%CAPTURE_XML%\" >nul\r\n"
+                "if /I \"%~1\"==\"/Create\" if /I \"%~3\"==\"IniShareSync\" copy /Y \"%~5\" \"%CAPTURE_XML%\" >nul\r\n"
+                "if /I \"%~1\"==\"/Create\" if /I \"%~3\"==\"IniShareSyncStatus\" copy /Y \"%~5\" \"%CAPTURE_STATUS_XML%\" >nul\r\n"
                 "exit /b 0\r\n",
                 encoding="ascii",
             )
             environment = os.environ.copy()
             environment["CAPTURE_ARGS"] = str(captured_args)
             environment["CAPTURE_XML"] = str(captured_xml)
+            environment["CAPTURE_STATUS_XML"] = str(captured_status_xml)
 
             install_result = subprocess.run(
                 [
@@ -256,6 +293,9 @@ class MainTests(unittest.TestCase):
                 "<WorkingDirectory>{}</WorkingDirectory>".format(project_root / "dist"),
                 task_xml,
             )
+            status_task_xml = captured_status_xml.read_text(encoding="utf-8-sig")
+            self.assertIn("<Interval>PT1M</Interval>", status_task_xml)
+            self.assertIn("<Arguments>--status-only</Arguments>", status_task_xml)
 
             win32_bundle = project_root / "dist-win32" / "IniShareSync"
             win32_executable = win32_bundle / "IniShareSync.exe"
@@ -329,6 +369,7 @@ class MainTests(unittest.TestCase):
             )
             scheduler_commands = captured_args.read_text(encoding="utf-8")
             self.assertIn("/Create /SC MINUTE /MO 5 /TN IniShareSync /TR", scheduler_commands)
+            self.assertIn("/Create /SC MINUTE /MO 1 /TN IniShareSyncStatus /TR", scheduler_commands)
             self.assertIn(
                 "/Create /SC ONSTART /TN IniShareSyncStartup /TR",
                 scheduler_commands,
@@ -364,6 +405,8 @@ class MainTests(unittest.TestCase):
             self.assertIn("/Delete /TN IniShareSync /F", scheduler_commands)
             self.assertIn("/Query /TN IniShareSyncStartup", scheduler_commands)
             self.assertIn("/Delete /TN IniShareSyncStartup /F", scheduler_commands)
+            self.assertIn("/Query /TN IniShareSyncStatus", scheduler_commands)
+            self.assertIn("/Delete /TN IniShareSyncStatus /F", scheduler_commands)
 
     def test_build_places_runtime_configuration_next_to_packaged_exe(self):
         """If the config is absent from dist, the scheduled EXE cannot find its settings."""
@@ -427,7 +470,7 @@ class MainTests(unittest.TestCase):
             self.assertEqual(b"PE\x00\x00", handle.read(4))
             self.assertEqual(0x014C, int.from_bytes(handle.read(2), byteorder="little"))
 
-    def test_xp32_build_creates_x86_folder_bundle_with_runtime_configuration(self):
+    def test_xp32_build_creates_x86_folder_bundle_without_device_configuration(self):
         """An XP host cannot start a Python 3.8 runtime or a modern PyInstaller bootloader."""
         project_root = Path(__file__).resolve().parents[1]
         result = subprocess.run(
@@ -451,7 +494,19 @@ class MainTests(unittest.TestCase):
         bundle_directory = project_root / "dist-xp32" / "IniShareSync"
         executable = bundle_directory / "IniShareSync.exe"
         self.assertTrue(executable.is_file())
-        self.assertTrue((bundle_directory / "sync_config.json").is_file())
+        self.assertFalse((bundle_directory / "sync_config.json").exists())
+        self.assertFalse((bundle_directory / "sync_state.json").exists())
+        self.assertFalse((bundle_directory / "cloud_sync_state.json").exists())
+        self.assertFalse((bundle_directory / "ini_share_sync.lock").exists())
+        self.assertFalse((bundle_directory / "ini_share_sync_status.lock").exists())
+        self.assertFalse((bundle_directory / "logs").exists())
+        self.assertTrue((bundle_directory / "sync_config.example.json").is_file())
+        self.assertTrue(
+            (bundle_directory / "sync_config.example.json").read_bytes().startswith(b"\xef\xbb\xbf")
+        )
+        self.assertTrue((bundle_directory / "qms-upload-ca.crt").is_file())
+        self.assertTrue((bundle_directory / "setup_tasks.cmd").is_file())
+        self.assertTrue((bundle_directory / "更新说明.txt").is_file())
         self.assertTrue((bundle_directory / "python34.dll").is_file())
         with executable.open("rb") as handle:
             self.assertEqual(b"MZ", handle.read(2))
@@ -469,10 +524,11 @@ class MainTests(unittest.TestCase):
             source_root = Path(directory) / "source"
             source_root.mkdir()
             config_path = deployed_bundle / "sync_config.json"
-            with config_path.open(encoding="utf-8") as handle:
-                config = json.load(handle)
-            config["source_root"] = str(source_root)
-            config["device_id"] = "XP-SMOKE-CHECK"
+            config = {
+                "source_root": str(source_root),
+                "target_root": r"\\localhost\unused-share",
+                "device_id": "XP-SMOKE-CHECK",
+            }
             with config_path.open("w", encoding="utf-8") as handle:
                 json.dump(config, handle)
             smoke_result = subprocess.run(

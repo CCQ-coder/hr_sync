@@ -8,6 +8,7 @@ param(
 $ErrorActionPreference = "Stop"
 $taskName = "IniShareSync"
 $startupTaskName = "IniShareSyncStartup"
+$statusTaskName = "IniShareSyncStatus"
 $projectRoot = Split-Path -Parent $PSCommandPath
 $exeRelativePath = "$PackageDirectory\IniShareSync.exe"
 if ($PackageDirectory -eq "dist-win32" -or $PackageDirectory -eq "dist-xp32") {
@@ -36,6 +37,11 @@ if ($PSCmdlet.ShouldProcess($taskName, "创建或更新每 5 分钟执行一次�
         & $SchtasksPath /Create /SC ONSTART /TN $startupTaskName /TR $taskCommand /F
         if ($LASTEXITCODE -ne 0) {
             throw "Windows XP 开机同步任务创建失败，schtasks 退出码：$LASTEXITCODE"
+        }
+        $statusCommand = $taskCommand + ' --status-only'
+        & $SchtasksPath /Create /SC MINUTE /MO 1 /TN $statusTaskName /TR $statusCommand /F
+        if ($LASTEXITCODE -ne 0) {
+            throw "Windows XP 状态采集任务创建失败，schtasks 退出码：$LASTEXITCODE"
         }
         Write-Host "Windows XP 计划任务已创建或更新：$taskName"
         return
@@ -98,14 +104,21 @@ if ($PSCmdlet.ShouldProcess($taskName, "创建或更新每 5 分钟执行一次�
 </Task>
 "@
 
+    $statusXml = $xml.Replace("<Interval>PT5M</Interval>", "<Interval>PT1M</Interval>").Replace(
+        "</Command>",
+        "</Command>`n      <Arguments>--status-only</Arguments>"
+    )
+
     $xmlPath = [System.IO.Path]::GetTempFileName()
     try {
-        Set-Content -LiteralPath $xmlPath -Value $xml -Encoding UTF8
-        & $SchtasksPath /Create /TN $taskName /XML $xmlPath /F
-        if ($LASTEXITCODE -ne 0) {
-            throw "计划任务创建失败，schtasks 退出码：$LASTEXITCODE"
+        foreach ($task in @(@{ Name = $taskName; Xml = $xml }, @{ Name = $statusTaskName; Xml = $statusXml })) {
+            Set-Content -LiteralPath $xmlPath -Value $task.Xml -Encoding UTF8
+            & $SchtasksPath /Create /TN $task.Name /XML $xmlPath /F
+            if ($LASTEXITCODE -ne 0) {
+                throw "计划任务创建失败：$($task.Name)，schtasks 退出码：$LASTEXITCODE"
+            }
+            Write-Host "计划任务已创建或更新：$($task.Name)"
         }
-        Write-Host "计划任务已创建或更新：$taskName"
     }
     finally {
         Remove-Item -LiteralPath $xmlPath -Force -ErrorAction SilentlyContinue

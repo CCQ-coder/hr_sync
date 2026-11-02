@@ -19,9 +19,13 @@ def sha256_file(path):
     return digest.hexdigest()
 
 
-def candidate_key(candidate):
+def candidate_key(candidate, config=None):
     """Build a case-insensitive state key from the complete source path."""
-    return str(candidate.source_path.resolve()).casefold()
+    key = str(candidate.source_path.resolve()).casefold()
+    if config is not None and config.server_url:
+        destination = config.server_url + "\n" + config.device_id
+        key = hashlib.sha256(destination.encode("utf-8")).hexdigest() + ":" + key
+    return key
 
 
 def load_state(path):

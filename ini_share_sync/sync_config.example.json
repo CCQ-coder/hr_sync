@@ -1,5 +1,7 @@
-{
+﻿{
   "source_root": "D:\\WTD\\JOBS",
-  "target_root": "\\\\Scbgx\\数字化\\飞针机",
-  "device_id": "请填写设备编号"
+  "server_url": "https://106.227.69.144:5173",
+  "device_id": "请填写设备编号",
+  "upload_token": "请填写该设备专用令牌",
+  "ca_cert": "qms-upload-ca.crt"
 }

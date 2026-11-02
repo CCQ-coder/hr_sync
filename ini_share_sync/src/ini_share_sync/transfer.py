@@ -1,10 +1,15 @@
 """Write destination TXT files without exposing incomplete copies."""
 
+import base64
 import ctypes
 import hashlib
+from http.client import HTTPSConnection, HTTPException
+import json
 import os
-import uuid
 from pathlib import Path
+import ssl
+from urllib.parse import urlsplit
+import uuid
 
 from .config import SyncConfig
 from .discovery import SyncCandidate
@@ -87,3 +92,51 @@ def copy_as_txt(source_path: Path, destination_path: Path) -> str:
     finally:
         if temporary.exists():
             temporary.unlink()
+
+
+def post_json(config, endpoint, payload):
+    """Send one verified HTTPS request; redirects and failures remain retries."""
+    parsed = urlsplit(config.server_url)
+    if parsed.scheme != "https":
+        raise ValueError("server_url 必须使用 HTTPS")
+    context = ssl.create_default_context(cafile=str(config.ca_cert))
+    connection = HTTPSConnection(parsed.hostname, parsed.port, timeout=30, context=context)
+    try:
+        connection.request(
+            "POST", parsed.path.rstrip("/") + endpoint,
+            body=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={"Content-Type": "application/json; charset=utf-8", "X-Device-Token": config.upload_token},
+        )
+        response = connection.getresponse()
+        if not 200 <= response.status < 300:
+            raise OSError("QMS 上传失败，HTTP " + str(response.status))
+    except HTTPException as exc:
+        raise OSError("QMS HTTPS 响应无效") from exc
+    finally:
+        connection.close()
+
+
+def upload_ini(config, candidate):
+    """Upload a bounded, stable raw INI using the legacy TXT timestamp conversion."""
+    before = candidate.source_path.stat()
+    with candidate.source_path.open("rb") as handle:
+        content = handle.read(8 * 1024 * 1024 + 1)
+    after = candidate.source_path.stat()
+    if len(content) > 8 * 1024 * 1024:
+        raise ValueError("INI 超过 8 MiB")
+    if (len(content) != before.st_size or
+            any(getattr(before, key) != getattr(after, key) for key in ("st_size", "st_ctime", "st_mtime", "st_ino"))):
+        raise ValueError("INI 读取期间发生变化，下次重试")
+    created = timestamp_to_filetime(after.st_ctime)
+    modified = timestamp_to_filetime(after.st_mtime)
+    fingerprint = hashlib.sha256(content).hexdigest()
+    post_json(config, "/api/v1/flying-probe/device-files", {
+        "schemaVersion": 1,
+        "deviceId": config.device_id,
+        "jobName": candidate.job_name,
+        "createdFileTime": (created.dwHighDateTime << 32) | created.dwLowDateTime,
+        "modifiedFileTime": (modified.dwHighDateTime << 32) | modified.dwLowDateTime,
+        "sha256": fingerprint,
+        "contentBase64": base64.b64encode(content).decode("ascii"),
+    })
+    return fingerprint

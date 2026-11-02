@@ -1,0 +1,79 @@
+﻿飞针机设备端（Windows XP 32 位）HTTPS 直传安装说明
+
+请把本包完整复制到飞针机设备本机，不能只复制 IniShareSync.exe。
+计划任务直接运行无黑窗 EXE；setup_tasks.cmd 只在安装或更新时运行一次，
+结束后 CMD 窗口可以关闭，不要把 CMD 设为周期任务。本包不含真实设备配置和令牌。
+
+一、每台设备先准备配置
+1. 在线上 QMS 新增飞针机设备，建立 machineName 与本机 device_id 相同的
+   映射，在 HTTPS 管理页面生成该设备专用上传令牌。每台电脑的编号和令牌不同。
+2. 确认 D:\WTD\JOBS 存在、设备能访问 https://106.227.69.144:5173，
+   本机日期和时间正确。时间错误会导致 HTTPS 证书验证失败。
+3. 旧安装先备份整个安装目录，把原 sync_config.json 另存为
+   sync_config.unc.backup.json；保留 sync_state.json、cloud_sync_state.json
+   和日志。新装建议把整个包放在 C:\IniShareSync，目录路径不要有空格。
+4. 把 sync_config.example.json 复制为 sync_config.json，填写本机唯一
+   device_id 和该设备专用 upload_token；server_url 保持
+   https://106.227.69.144:5173，ca_cert 保持 qms-upload-ca.crt。
+   证书文件放在 EXE、配置文件所在目录。不要跨设备复制真实配置，不要把
+   令牌发到聊天里，也不要改成 HTTP 或关闭证书验证。
+
+二、更新旧设备和设置任务
+1. 在 Windows“计划任务”中记下旧任务的程序路径、账户和周期，暂时禁用
+   旧任务并结束旧程序。把新包文件复制到原安装目录，覆盖程序文件；
+   不删除两份状态文件。按第一节修改本机配置。
+2. 用管理员账户打开 CMD，进入实际安装目录。下面以 C:\IniShareSync
+   为例；旧设备若装在别处，只替换第一行路径：
+
+   cd /d C:\IniShareSync
+   call setup_tasks.cmd
+   echo SETUP_EXIT=%ERRORLEVEL%
+
+   等命令返回提示符后再看 SETUP_EXIT；0 表示任务设置成功。新建任务时
+   XP 可能提示输入 Windows 任务账户密码，请在本机输入，字符不会显示。
+   这不是 QMS 令牌；不要把密码写进命令或脚本。如果一直没有返回，先
+   检查是否在等密码，不要重复运行脚本。失败时旧任务不会被删除。
+3. 脚本保留旧任务的账户和周期，更新其动作为无窗口 EXE；缺失的任务
+   会建为 IniShareSync 每 5 分钟同步 INI、IniShareSyncStatus 每 1 分钟
+   上报电脑状态。已有开机任务会更新动作，未有则不新增。成功后重新
+   启用先前禁用的任务。Windows 开机后周期任务会继续运行，但不会让
+   已关机的电脑自己开机。
+
+三、仅首次安装可选：无密码创建任务
+只有全新 HTTPS 安装、两个同名任务都不存在、安装目录确为
+C:\IniShareSync 时，才用以下命令代替 setup_tasks.cmd。用管理员 CMD
+逐条执行，不要对已有任务运行 /Create，也不要擅自更改旧任务账户：
+
+   schtasks /Create /SC MINUTE /MO 5 /TN IniShareSync /TR C:\IniShareSync\IniShareSync.exe /RU SYSTEM
+   schtasks /Create /SC MINUTE /MO 1 /TN IniShareSyncStatus /TR "C:\IniShareSync\IniShareSync.exe --status-only" /RU SYSTEM
+
+SYSTEM 账户无需密码，但必须能读 D:\WTD\JOBS 和配置，并能写安装目录的
+logs 与 cloud_sync_state.json。它不沿用原用户的共享目录凭据；只在确认
+使用 HTTPS 直传且任务实际上传成功后采用此方案。
+
+四、验证任务与线上接收
+在安装目录的 CMD 中逐条运行：
+
+   dir "%WINDIR%\Tasks\IniShareSync*.job"
+   schtasks /Query
+   schtasks /Run /TN IniShareSyncStatus
+   schtasks /Run /TN IniShareSync
+
+XP 的 schtasks /Query 不支持 /TN；不要使用 /Query /TN，也不要在
+/Create 后加 /F。/Run 显示成功只说明已启动，不代表 QMS 收到数据。
+等 1～5 分钟，查看最新的 logs\host-status-YYYY-MM-DD.log，应出现
+“电脑状态已上传 QMS”；查看 logs\sync-YYYY-MM-DD.log 的“同步成功”或
+失败原因，确认 cloud_sync_state.json 更新，再到 QMS 查看该设备的
+电脑状态、原始文件及解析结果。若无状态，先检查 device_id 与映射的
+machineName、令牌、证书、本机时间和日志。
+
+首次直传会补传 D:\WTD\JOBS 第一层 <任务名>\<任务名>.ini 中所有符合
+原同步规则的历史文件，可能需要多个周期。仅服务器确认成功才写入
+cloud_sync_state.json；失败下次重试。单个 INI 超过 8 MiB 会被拒绝。
+旧 sync_state.json 和源 INI 不会被删除。
+
+五、回滚和注意事项
+先验证一台，再逐台切换。需要回滚时先禁用新任务，恢复备份的旧程序、
+旧配置和原任务设置；保留源 INI、两份状态文件、日志和线上已收到的数据。
+不要把 setup_tasks.cmd、cmd.exe 或 PowerShell 设成定时运行程序。
+以日志和 QMS 实际收到的数据判断成功，不以任务创建或 /Run 提示判断。

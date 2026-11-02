@@ -1,0 +1,52 @@
+name: Build IniShareSync for Windows XP
+
+on:
+  push:
+    branches: [gy]
+    paths:
+      - ini_share_sync/**
+      - .github/workflows/ini-share-sync-xp-build.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Python 3.4.4 x86 and PyInstaller 3.4
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $msi = Join-Path $env:RUNNER_TEMP 'python-3.4.4.msi'
+          Invoke-WebRequest 'https://www.python.org/ftp/python/3.4.4/python-3.4.4.msi' -OutFile $msi
+          if ((Get-FileHash $msi -Algorithm MD5).Hash.ToLowerInvariant() -ne 'e96268f7042d2a3d14f7e23b2535738b') {
+            throw 'Python 3.4.4 x86 installer checksum mismatch'
+          }
+          $pythonDir = Join-Path $env:GITHUB_WORKSPACE 'ini_share_sync\.tools\python34-x86'
+          $install = Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /qn /norestart TARGETDIR=`"$pythonDir`" ALLUSERS=1" -Wait -PassThru
+          if ($install.ExitCode -notin @(0, 3010)) { throw "Python installer failed: $($install.ExitCode)" }
+          $python = Join-Path $pythonDir 'python.exe'
+          if (-not (Test-Path $python)) { throw "Python executable not found: $python" }
+          & $python -m ensurepip --upgrade
+          if ($LASTEXITCODE -ne 0) { throw 'ensurepip failed' }
+          & $python -m pip install 'pip==19.1.1' 'setuptools==40.8.0'
+          if ($LASTEXITCODE -ne 0) { throw 'pip bootstrap failed' }
+          & $python -m pip install 'pefile==2019.4.18' 'altgraph==0.16.1' 'macholib==1.11' 'PyInstaller==3.4'
+          if ($LASTEXITCODE -ne 0) { throw 'PyInstaller dependencies failed' }
+      - name: Build silent x86 package
+        shell: pwsh
+        run: .\ini_share_sync\build_exe_xp32.ps1
+      - name: Smoke test packaged executable
+        shell: pwsh
+        run: |
+          $exe = Join-Path $env:GITHUB_WORKSPACE 'ini_share_sync\dist-xp32\IniShareSync\IniShareSync.exe'
+          $process = Start-Process $exe -ArgumentList '--help' -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Packaged EXE failed to start: $($process.ExitCode)" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: IniShareSync-XP32
+          path: ini_share_sync/dist-xp32/IniShareSync/
+          if-no-files-found: error

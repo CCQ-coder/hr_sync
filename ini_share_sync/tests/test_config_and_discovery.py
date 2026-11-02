@@ -47,6 +47,33 @@ class ConfigAndDiscoveryTests(unittest.TestCase):
             with self.assertRaises(ConfigError):
                 load_config(path)
 
+    def test_rejects_windows_reserved_device_id(self):
+        """Windows device names and forbidden suffixes must not alias other folders."""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "sync_config.json"
+            for device_id in ("CON", "aux", "NUL.txt", "LPT1", "FEIZHEN.", "FEIZHEN?", "FEIZHEN<1", "X" * 161):
+                with self.subTest(device_id=device_id):
+                    path.write_text(
+                        json.dumps({
+                            "source_root": r"D:\WTD\JOBS",
+                            "target_root": r"\\Scbgx\数字化\飞针机",
+                            "device_id": device_id,
+                        }),
+                        encoding="utf-8",
+                    )
+                    with self.assertRaises(ConfigError):
+                        load_config(path)
+
+            path.write_text(
+                json.dumps({
+                    "source_root": r"D:\WTD\JOBS",
+                    "target_root": r"\\Scbgx\数字化\飞针机",
+                    "device_id": " FEIZHEN-01 ",
+                }),
+                encoding="utf-8",
+            )
+            self.assertEqual("FEIZHEN-01", load_config(path).device_id)
+
     def test_load_config_rejects_local_target_directory(self):
         """Accepting a local target could silently write data outside the LAN share."""
         with tempfile.TemporaryDirectory() as directory:
