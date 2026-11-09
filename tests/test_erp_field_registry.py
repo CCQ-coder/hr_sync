@@ -398,6 +398,16 @@ class ErpFieldRegistryTests(unittest.TestCase):
                 registry = sync.load_erp_field_registry()
             self.assertGreater(len(registry.fields), 1)
 
+    def test_frozen_loader_uses_adjacent_registry_when_temp_bundle_is_removed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "erp_field_registry.json").write_bytes(REGISTRY_PATH.read_bytes())
+            with patch.object(sync.sys, "frozen", True, create=True), \
+                    patch.object(sync.sys, "_MEIPASS", str(root / "removed_bundle"), create=True), \
+                    patch.object(sync.sys, "executable", str(root / "QMS-ERP.exe")):
+                registry = sync.load_erp_field_registry()
+            self.assertGreater(len(registry.fields), 1)
+
     def test_generator_reads_real_workbooks_and_assigns_stable_source_scoped_names(self):
         generator = importlib.import_module("generate_erp_field_registry")
         with tempfile.TemporaryDirectory() as directory:

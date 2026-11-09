@@ -1273,10 +1273,15 @@ class ErpFieldRegistry:
 
 
 def bundled_resource_path(name: str) -> Path:
-    """Return a bundled PyInstaller resource or the adjacent source resource."""
+    """Return the bundled resource, or its adjacent copy if extraction vanished."""
     bundle_root = getattr(sys, "_MEIPASS", None) if getattr(sys, "frozen", False) else None
     if bundle_root:
-        return Path(bundle_root) / name
+        bundled = Path(bundle_root) / name
+        if not bundled.is_file():
+            adjacent = Path(sys.executable).resolve().with_name(name)
+            if adjacent.is_file():
+                return adjacent
+        return bundled
     return Path(__file__).resolve().with_name(name)
 
 
