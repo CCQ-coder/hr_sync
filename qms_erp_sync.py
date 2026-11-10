@@ -243,7 +243,7 @@ FIELD_MAP: Dict[str, str] = {
     "customerOrder": "客户订单",
     "customerOrderNo": "订单编号",
     "customerOrderQuantity": "订单数量",
-    "materialArea": "板材面积",
+    "materialArea": "总投料面积<成品>",
     "productionNoticeArea": "生产通知单面积<成品>",
     "customerOrderArea": "客户订单面积<成品>",
     "aBoardPanelQuantity": "A板总PNL",
