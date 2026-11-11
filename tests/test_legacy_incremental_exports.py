@@ -33,6 +33,17 @@ LEGACY_WORK_ORDER_HEADERS = (
     "pingm_bh_old", "date_rkend", "dind_bh", "shul_xd", "mj_pb_tl", "shul_mq",
 )
 
+LEGACY_COMPLETION_HEADERS = (
+    "keh_j", "date_tl", "shch_bh", "page_no", "shch_n_bh", "pingm_bh", "shul_s",
+    "pnl_set_c", "gongxm", "gongx_shb", "beizh_m", "date_wch", "hour_sc",
+    "date_yqjh", "qr", "qr_name", "wpnl_ch", "wpnl_k", "chn1_wf2",
+    "zhymxh_ss", "zhymxh_cs", "wzymxh_ss", "wzymxh_cs", "c3", "dind_bh",
+    "keh_po", "shul_bcp_yu", "zz_c10", "wpnl_chk", "zz_c09", "zz_c06",
+    "zz_c17", "dd_nh", "dd_cs_bfb", "dd_jh", "dd_ss_bfb", "gm_chc",
+    "ct_th", "ct_kth", "ct_2th", "ct_2kth", "pcs_ch", "pcs_k",
+    "pcs_lpsh", "hep_pm_bh", "gxdanj_now", "jine_wf",
+)
+
 
 class LegacyIncrementalExportTests(unittest.TestCase):
     def setUp(self):
@@ -80,6 +91,48 @@ class LegacyIncrementalExportTests(unittest.TestCase):
         self.assertEqual(schema.normalized_headers[1], sync.normalize_header("生产指令号"))
         self.assertEqual(schema.normalized_headers[4], sync.normalize_header("厂内编号"))
         self.assertEqual(schema.normalized_headers[12], sync.normalize_header("工艺"))
+
+    def test_reviewed_internal_completion_headers_map_to_completion_fields(self):
+        schema = sync.resolve_source_schema(
+            self.registry,
+            "2026-11-09/完成数量资料.xls",
+            "完成数量资料",
+            LEGACY_COMPLETION_HEADERS,
+            map_work_orders=False,
+        )
+
+        self.assertEqual(schema.target_table, "qms_completion_quantity")
+        self.assertEqual(len(schema.definitions), 47)
+        self.assertEqual(schema.definitions[4].database_column, "erp_barcode")
+        self.assertEqual(schema.definitions[6].database_column, "erp_completion_quantity")
+
+    def test_changed_internal_completion_header_still_requires_review(self):
+        changed = list(LEGACY_COMPLETION_HEADERS)
+        changed[6] = "unreviewed_quantity"
+
+        with self.assertRaisesRegex(sync.SyncError, "字段注册表"):
+            sync.resolve_source_schema(
+                self.registry,
+                "2026-11-09/完成数量资料.xls",
+                "完成数量资料",
+                changed,
+                map_work_orders=False,
+            )
+
+    def test_internal_completion_note_is_not_written_as_operator(self):
+        schema = sync.resolve_source_schema(
+            self.registry, "2026-11-09/完成数量资料.xls", "完成数量资料",
+            LEGACY_COMPLETION_HEADERS, map_work_orders=False,
+        )
+        raw_data = dict.fromkeys(LEGACY_COMPLETION_HEADERS, None)
+        raw_data.update({"shch_n_bh": "BC1", "beizh_m": "备注内容"})
+
+        with self.assertRaisesRegex(sync.SyncError, "备注"):
+            list(sync._source_record_pair(
+                "2026-11-09/完成数量资料.xls", "完成数量资料", 2,
+                {}, raw_data, 0, False, sync.SourceScanStats(),
+                schema.target_table, schema.definitions, lambda _: None,
+            ))
 
     def test_missing_codepage_text_is_decoded_as_the_erp_gbk_export(self):
         mojibake = "\xd4\xad\xc1\xcf\xc8\xeb\xbf\xe2\xb5\xa5\xd7\xca\xc1\xcf"

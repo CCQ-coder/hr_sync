@@ -55,8 +55,8 @@ EXCEL_SUFFIXES = (".xls", ".xlsx")
 SUMMARY_ROW_LABELS = frozenset((
     "合计", "总计", "汇总", "小计", "本页合计", "total", "subtotal", "grandtotal",
 ))
-# The ERP exporter used internal field names before 2026-09-16.  Only these
-# fully reviewed, whole-sheet header signatures may use positional aliases.
+# Some ERP exports use internal field names.  Only these fully reviewed,
+# whole-sheet header signatures may use positional aliases.
 LEGACY_ERP_HEADER_SIGNATURES: Mapping[str, str] = MappingProxyType({
     "原料入库单资料": "a5308e858b96a488d6f8360951697e07b42baa92799b0f68992e18279659817f",
     "原料出库单资料": "fd527802aa3038e9df2a8d2632f6f1760d2f795f2687dcd9f280362e0cd82afb",
@@ -70,6 +70,7 @@ LEGACY_ERP_HEADER_SIGNATURES: Mapping[str, str] = MappingProxyType({
     "补料资料": "0408172c8715578269666388d05ba2175b83be22abe7f4e50d0b701ff8085c4e",
     "送货单资料": "2bc7de2679bd8164db0745cf52a274a7faf4089cfc54d16e756e1fa86194c316",
     "采购订单资料": "c96cad5b3b5b9ab36d814adfc58905eb3c5ce8dc4c8cf55c1d52b83a60699437",
+    "完成数量资料": "b9d9b5d905babf81e17ff6ab07c1ae6da5b16ce4cd305324d3b81389f106168e",
 })
 DATABASE_MODE_LABEL = "数据库直连（默认，不需要 Token）"
 API_MODE_LABEL = "QMS 接口（需要网关 Token）"
@@ -1589,6 +1590,9 @@ def _source_record_pair(
     source_row_ordinals: Optional[Dict[str, int]] = None,
 ) -> Iterable[Tuple[RawSourceRecord, Optional[Dict[str, Any]]]]:
     """Build a source record and, where applicable, its work-order view."""
+    if source_table == "qms_completion_quantity" and not is_empty(raw_data.get("beizh_m")):
+        # shortcut: the internal export's note has no registered target; reject it until mapped.
+        raise SyncError(f"{relative_file} / {sheet_name} 第 {row_no} 行备注字段 beizh_m 尚未映射。")
     field_values = {
         field.database_column: database_cell_value(value)
         for field, value in zip(definitions, raw_data.values())
