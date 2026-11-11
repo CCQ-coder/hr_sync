@@ -119,20 +119,22 @@ class LegacyIncrementalExportTests(unittest.TestCase):
                 map_work_orders=False,
             )
 
-    def test_internal_completion_note_is_not_written_as_operator(self):
+    def test_internal_completion_note_is_written_as_remark(self):
         schema = sync.resolve_source_schema(
             self.registry, "2026-11-09/完成数量资料.xls", "完成数量资料",
             LEGACY_COMPLETION_HEADERS, map_work_orders=False,
         )
+        self.assertEqual(schema.definitions[10].database_column, "erp_remarks")
         raw_data = dict.fromkeys(LEGACY_COMPLETION_HEADERS, None)
-        raw_data.update({"shch_n_bh": "BC1", "beizh_m": "备注内容"})
+        raw_data.update({"shch_n_bh": "BC1", "beizh_m": "WLP"})
 
-        with self.assertRaisesRegex(sync.SyncError, "备注"):
-            list(sync._source_record_pair(
-                "2026-11-09/完成数量资料.xls", "完成数量资料", 2,
-                {}, raw_data, 0, False, sync.SourceScanStats(),
-                schema.target_table, schema.definitions, lambda _: None,
-            ))
+        records = list(sync._source_record_pair(
+            "2026-11-09/完成数量资料.xls", "完成数量资料", 368,
+            {}, raw_data, 0, False, sync.SourceScanStats(),
+            schema.target_table, schema.definitions, lambda _: None,
+        ))
+        self.assertEqual(records[0][0].field_values["erp_remarks"], "WLP")
+        self.assertNotIn("erp_operator", records[0][0].field_values)
 
     def test_missing_codepage_text_is_decoded_as_the_erp_gbk_export(self):
         mojibake = "\xd4\xad\xc1\xcf\xc8\xeb\xbf\xe2\xb5\xa5\xd7\xca\xc1\xcf"

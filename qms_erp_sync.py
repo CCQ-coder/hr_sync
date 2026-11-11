@@ -22,7 +22,7 @@ import traceback
 import urllib.error
 import urllib.request
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -1270,6 +1270,13 @@ class ErpFieldRegistry:
             or any(field.column_index != index for index, field in enumerate(definitions, 1))
         ):
             raise SyncError(f"旧版 ERP 表头列数与字段注册表不一致：{source_file}")
+        if canonical_file == "完成数量资料":
+            # The reviewed internal export has a note in column 11, not an operator.
+            definitions = definitions[:10] + (replace(
+                definitions[10], excel_source_header="备注", excel_unique_header="备注",
+                database_column="erp_remarks", legacy_database_column="erp_备注",
+                column_comment="Excel列名：备注",
+            ),) + definitions[11:]
         return definitions
 
 
@@ -1590,9 +1597,6 @@ def _source_record_pair(
     source_row_ordinals: Optional[Dict[str, int]] = None,
 ) -> Iterable[Tuple[RawSourceRecord, Optional[Dict[str, Any]]]]:
     """Build a source record and, where applicable, its work-order view."""
-    if source_table == "qms_completion_quantity" and not is_empty(raw_data.get("beizh_m")):
-        # shortcut: the internal export's note has no registered target; reject it until mapped.
-        raise SyncError(f"{relative_file} / {sheet_name} 第 {row_no} 行备注字段 beizh_m 尚未映射。")
     field_values = {
         field.database_column: database_cell_value(value)
         for field, value in zip(definitions, raw_data.values())
