@@ -142,6 +142,33 @@ class ErpFieldRegistryTests(unittest.TestCase):
                                            ["shch_bh", "pingm_bh"])
         ))
 
+    def test_sample_instruction_uses_same_work_order_identity_and_fields(self):
+        registry = sync.load_erp_field_registry(REGISTRY_PATH)
+        original_fields = [field for field in registry.fields if field.table_name == "qms_work_order"]
+        original_headers = [field.excel_source_header for field in original_fields]
+        sample_headers = ["生产指令", *original_headers[1:]]
+        values = [None] * len(sample_headers)
+        for column, value in ((0, "S26010001"), (3, "01ST07950B01"),
+                              (5, "无铅喷锡"), (14, 1428)):
+            values[column] = value
+        pairs = []
+        for name, headers in (("生产指示资料.xls", original_headers),
+                              ("生产指示资料-样板.xls", sample_headers)):
+            canonical = registry.canonical_headers_for(name, headers)
+            self.assertTrue(sync.is_work_order_sheet(canonical))
+            definitions = registry.resolve_sheet("qms_work_order", name, "Test", headers)
+            row = dict(zip(map(sync.normalize_header, canonical), values))
+            raw_data = dict(zip(headers, values))
+            pairs.append(next(iter(sync._source_record_pair(
+                name, "Test", 2, row, raw_data, 0, True, sync.SourceScanStats(),
+                None, definitions, name,
+            ))))
+        self.assertEqual(pairs[0][0].source_key, pairs[1][0].source_key)
+        self.assertEqual(pairs[0][1]["sourceKey"], pairs[1][1]["sourceKey"])
+        self.assertEqual("S26010001", pairs[1][1]["workOrderNo"])
+        self.assertEqual("S26010001", pairs[1][1]["erpFields"]["erp_production_order_no"])
+        self.assertIsNone(pairs[1][0].source_table)
+
     def test_xls_without_codepage_decodes_gbk_and_preserves_partial_bytes(self):
         encoded = "江西广臻".encode("gbk").decode("latin1")
         warnings = [0]
@@ -521,7 +548,7 @@ class ErpFieldRegistryTests(unittest.TestCase):
         registry = sync.load_erp_field_registry(REGISTRY_PATH)
         completion = [f for f in registry.fields if f.table_name == "qms_completion_quantity"]
         scrap = [f for f in registry.fields if f.table_name == "qms_scrap"]
-        self.assertEqual((len(completion), len(scrap), len(registry.source_layouts)), (47, 23, 24))
+        self.assertEqual((len(completion), len(scrap), len(registry.source_layouts)), (47, 23, 25))
         self.assertEqual(completion[4].database_column, "erp_barcode")
         self.assertEqual(scrap[0].database_column, "erp_completion_no")
 

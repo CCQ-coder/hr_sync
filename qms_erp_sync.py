@@ -2573,10 +2573,12 @@ def synchronize_database_directory(
                         client._clear_target_tables(cursor, callback)
                     else:
                         # shortcut: moved exports retain old absolute paths; use full initialization after moving a file.
-                        client._clear_target_tables(
-                            cursor, callback, selected_tables=selected_tables,
-                            source_file=selected_file.resolve().as_posix(),
-                        )
+                        clear_tables = selected_tables - {"qms_work_order", "qms_production_batch"}
+                        if clear_tables:
+                            client._clear_target_tables(
+                                cursor, callback, selected_tables=clear_tables,
+                                source_file=selected_file.resolve().as_posix(),
+                            )
                     for group in scan_groups:
                         callback(f"开始处理{'初始化' if group.role == 'initialization' else '增量'}数据目录：{group.directory}")
                         for path in group.files:
@@ -2605,6 +2607,10 @@ def synchronize_database_directory(
                                         next_state.pop(f"raw:{key}", None)
                                 for key in old_membership["work_orders"]:
                                     next_state.pop(f"work-order:{key}", None)
+                                if "qms_work_order" in selected_tables:
+                                    removed = removed_file_membership(next_state, file_key, membership)
+                                    if removed["work_orders"] or removed["batches"]:
+                                        deactivated += client._deactivate_removed_file_records(cursor, removed)
                             next_state.update(file_state)
                     for table, keys in latest_complete_keys.items():
                         deleted_for_table, deleted_keys_for_table = client._delete_missing_snapshot_rows(
@@ -3094,7 +3100,8 @@ class SyncApplication(ttk.Frame):
             self._write_log("自动同步无法启动：" + str(exc)) if automatic else messagebox.showerror(APP_NAME, str(exc))
             return
         confirmation = (
-            "将清理所有租户在选定 Excel 对应目标表中的数据；完整清单和工单对应表整表清理，"
+            "将清理选定 Excel 对应的 ERP 源表；生产指令按指令号更新同一工单表，"
+            "仅停用只属于该文件且已移除的指令和批次。"
             "其他源表按该 Excel 的当前绝对路径清理，然后仅导入该文件。"
             "文件移动后旧路径记录不会自动识别，请在原路径操作或做完整初始化。"
             "该操作无法撤销，是否继续？"

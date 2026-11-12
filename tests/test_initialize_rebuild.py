@@ -734,9 +734,10 @@ class InitializationTests(unittest.TestCase):
         self.assertNotIn("work-order:ERP-EXCEL:OLD", saved[-1])
         self.assertEqual("hash", saved[-1]["raw:ERP5:MAT-1"])
 
-    def test_selected_production_instruction_clears_work_order_and_batch(self):
+    def test_selected_production_instruction_preserves_other_work_orders_and_batches(self):
         client = MagicMock()
         client._upsert_work_order.return_value = "work-order-id"
+        client._deactivate_removed_file_records.return_value = 1
 
         def records(_config, _callback, stats, *, source_directory, selected_files,
                     headers_only=False, on_sheet=None, read_path=None):
@@ -754,7 +755,18 @@ class InitializationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary) / "生产指示资料.xls"
             source.write_bytes(b"production")
+            file_key = sync.source_file_state_key("initialization", source.parent, source)
+            state = {
+                sync.file_membership_state_key(file_key): json.dumps({
+                    "raw": {}, "work_orders": ["ERP-EXCEL:OLD", "ERP-EXCEL:SHARED"],
+                    "batches": [],
+                }),
+                "file-membership:other-file": json.dumps({
+                    "raw": {}, "work_orders": ["ERP-EXCEL:SHARED"], "batches": [],
+                }),
+            }
             with patch.object(sync, "QmsDatabaseClient", return_value=client), \
+                    patch.object(sync, "load_state", return_value=state), \
                     patch.object(sync, "iter_all_source_records", side_effect=records), \
                     patch.object(sync, "save_state"), patch.object(sync, "clear_file_progress"), \
                     patch.object(sync, "log_line"):
@@ -763,9 +775,11 @@ class InitializationTests(unittest.TestCase):
                     initialize=True,
                 )
 
+        client._clear_target_tables.assert_not_called()
+        client._upsert_work_order.assert_called_once()
         self.assertEqual(
-            {"qms_work_order", "qms_production_batch"},
-            client._clear_target_tables.call_args.kwargs["selected_tables"],
+            ["ERP-EXCEL:OLD"],
+            client._deactivate_removed_file_records.call_args.args[1]["work_orders"],
         )
 
 
