@@ -1721,6 +1721,8 @@ class QmsDatabaseClient:
                 user=self.username,
                 password=self.password,
                 connect_timeout=self.timeout,
+                # Release uncommitted locks if a broken network leaves the server session asleep.
+                init_command="SET SESSION wait_timeout = 300",
                 charset="utf8mb4",
                 autocommit=False,
             )
