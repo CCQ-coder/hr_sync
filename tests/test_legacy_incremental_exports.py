@@ -44,6 +44,13 @@ LEGACY_COMPLETION_HEADERS = (
     "pcs_lpsh", "hep_pm_bh", "gxdanj_now", "jine_wf",
 )
 
+LEGACY_SCRAP_HEADERS = (
+    "wanch_bh", "keh_bh", "keh_j", "date_tj", "pingm_bh", "gongxm", "shch_bh",
+    "mj_chp", "bum_j", "qued_j", "cengsh", "shul_ljbf", "shul_s", "sc_leib",
+    "hep_pm_bh", "shul_dbf_dw", "wpnl_ch", "jine_bil", "wpnl_chk", "wpnl_k",
+    "shch_cbh", "chsh_j", "shul_jch",
+)
+
 
 class LegacyIncrementalExportTests(unittest.TestCase):
     def setUp(self):
@@ -135,6 +142,24 @@ class LegacyIncrementalExportTests(unittest.TestCase):
         ))
         self.assertEqual(records[0][0].field_values["erp_remarks"], "WLP")
         self.assertNotIn("erp_operator", records[0][0].field_values)
+
+    def test_reviewed_internal_scrap_headers_map_all_registered_fields(self):
+        schema = sync.resolve_source_schema(
+            self.registry, "2026-11-09/报废.xls", "报废", LEGACY_SCRAP_HEADERS,
+            map_work_orders=False,
+        )
+        self.assertEqual(schema.target_table, "qms_scrap")
+        self.assertEqual(len(schema.definitions), 23)
+        self.assertEqual(schema.definitions[0].database_column, "erp_completion_no")
+        self.assertEqual(schema.definitions[-1].database_column, "erp_inspection_quantity")
+
+        changed = list(LEGACY_SCRAP_HEADERS)
+        changed[15] = "unreviewed_scrap_quantity"
+        with self.assertRaisesRegex(sync.SyncError, "字段注册表"):
+            sync.resolve_source_schema(
+                self.registry, "2026-11-09/报废.xls", "报废", changed,
+                map_work_orders=False,
+            )
 
     def test_missing_codepage_text_is_decoded_as_the_erp_gbk_export(self):
         mojibake = "\xd4\xad\xc1\xcf\xc8\xeb\xbf\xe2\xb5\xa5\xd7\xca\xc1\xcf"

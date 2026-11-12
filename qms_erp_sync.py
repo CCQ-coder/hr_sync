@@ -71,6 +71,7 @@ LEGACY_ERP_HEADER_SIGNATURES: Mapping[str, str] = MappingProxyType({
     "送货单资料": "2bc7de2679bd8164db0745cf52a274a7faf4089cfc54d16e756e1fa86194c316",
     "采购订单资料": "c96cad5b3b5b9ab36d814adfc58905eb3c5ce8dc4c8cf55c1d52b83a60699437",
     "完成数量资料": "b9d9b5d905babf81e17ff6ab07c1ae6da5b16ce4cd305324d3b81389f106168e",
+    "报废": "26037991aec8f082280e4ebb35225255b70c5b839c90c1702240819205814a2e",
 })
 DATABASE_MODE_LABEL = "数据库直连（默认，不需要 Token）"
 API_MODE_LABEL = "QMS 接口（需要网关 Token）"
