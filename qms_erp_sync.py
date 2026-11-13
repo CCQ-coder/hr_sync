@@ -1837,7 +1837,8 @@ class QmsDatabaseClient:
             if (not isinstance(field, ErpFieldDefinition) or name != field.database_column
                     or field.table_name != table_name):
                 raise SyncError(f"ERP 字段定义与目标表或字段名不一致：{table_name} / {name}")
-        ErpFieldRegistry(fields.values())
+            # A target table can combine reviewed export variants with different fields at one source position.
+            ErpFieldRegistry((field,))
 
     def _ensure_erp_columns(self, cursor, table_name: str, fields: Mapping[str, ErpFieldDefinition]) -> None:
         """Add actual ERP fields as nullable text columns, never as JSON.

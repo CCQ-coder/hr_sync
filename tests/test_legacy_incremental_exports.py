@@ -56,6 +56,20 @@ class LegacyIncrementalExportTests(unittest.TestCase):
     def setUp(self):
         self.registry = sync.load_erp_field_registry()
 
+    def test_modern_and_legacy_completion_columns_can_share_a_target_table(self):
+        modern = {
+            field.database_column: field for field in self.registry.fields
+            if field.table_name == "qms_completion_quantity"
+        }
+        legacy = sync.resolve_source_schema(
+            self.registry, "2026-11-12/完成数量资料.xls", "完成数量资料",
+            LEGACY_COMPLETION_HEADERS, map_work_orders=False,
+        )
+        columns = {**modern, **{field.database_column: field for field in legacy.definitions}}
+
+        self.assertEqual(48, len(columns))
+        sync.QmsDatabaseClient._validate_erp_field_definitions("qms_completion_quantity", columns)
+
     def test_reviewed_internal_receipt_headers_map_to_current_registered_fields(self):
         schema = sync.resolve_source_schema(
             self.registry,
