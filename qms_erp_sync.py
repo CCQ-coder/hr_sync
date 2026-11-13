@@ -2678,7 +2678,7 @@ def synchronize_database_directory(
 
     if initialize and not dry_run:
         assert client is not None
-        with tempfile.TemporaryDirectory(prefix="qms-erp-snapshot-") as snapshot_directory:
+        with tempfile.TemporaryDirectory(prefix="qms-erp-snapshot-", dir=app_directory()) as snapshot_directory:
             for group in scan_groups:
                 for path in group.files:
                     original = path.resolve()

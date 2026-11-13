@@ -293,6 +293,8 @@ class InitializationPlanTests(unittest.TestCase):
         app.initialization_var.set.assert_called_once_with("/tmp/报废.xls")
 
     def test_single_excel_rebuild_preserves_other_file_state_and_clears_its_table(self):
+        read_paths = []
+
         class Connection:
             def cursor(self):
                 return self
@@ -330,6 +332,7 @@ class InitializationPlanTests(unittest.TestCase):
 
         def records(_config, _callback, stats, *, selected_files, on_sheet=None, **_kwargs):
             self.assertEqual(selected, selected_files[0])
+            read_paths.append(Path(_kwargs["read_path"]))
             if on_sheet:
                 on_sheet("qms_scrap", {})
             stats.files_scanned += 1
@@ -348,7 +351,10 @@ class InitializationPlanTests(unittest.TestCase):
             other.write_bytes(b"other")
             other_key = sync.source_file_state_key("incremental", daily, other)
             client = Client()
+            deploy = root / "deploy"
+            deploy.mkdir()
             with patch.object(sync, "state_path", return_value=root / "state.json"), \
+                    patch.object(sync, "app_directory", return_value=deploy), \
                     patch.object(sync, "QmsDatabaseClient", return_value=client), \
                     patch.object(sync, "iter_all_source_records", side_effect=records):
                 sync.save_state({other_key: sync.source_file_checkpoint(other), "raw:other": "old"})
@@ -361,6 +367,9 @@ class InitializationPlanTests(unittest.TestCase):
             self.assertEqual([{"target_tables": {"qms_scrap"}, "selected_file": selected}], client.cleared)
             self.assertEqual("old", state["raw:other"])
             self.assertEqual(sync.source_file_checkpoint(other), state[other_key])
+            self.assertTrue(read_paths)
+            self.assertTrue(all(path.parent.parent == deploy for path in read_paths))
+            self.assertEqual([], list(deploy.glob("qms-erp-snapshot-*")))
 
     def test_empty_single_excel_never_clears_database(self):
         with tempfile.TemporaryDirectory() as temporary:
