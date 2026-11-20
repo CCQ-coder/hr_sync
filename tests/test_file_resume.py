@@ -11,6 +11,81 @@ import qms_erp_sync as sync
 
 
 class FileResumeTests(unittest.TestCase):
+    def test_deadlock_retries_whole_file_without_double_counting_or_early_checkpoint(self):
+        connections = []
+        writes = []
+
+        class Connection:
+            def __init__(self):
+                self.commits = 0
+                self.rollbacks = 0
+                connections.append(self)
+
+            def cursor(self):
+                return self
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def commit(self):
+                self.commits += 1
+
+            def rollback(self):
+                self.rollbacks += 1
+
+            def close(self):
+                pass
+
+        class Client:
+            def __init__(self, _config):
+                pass
+
+            def _connect(self):
+                return Connection()
+
+            def _upsert_work_order(self, _cursor, _payload):
+                writes.append("work_order")
+                if len(writes) == 1:
+                    raise pymysql.OperationalError(1213, "deadlock")
+                return "order-id"
+
+            def _upsert_batch(self, _cursor, _payload, _order_id):
+                writes.append("batch")
+
+        def records(_config, _callback, stats, *, source_directory, selected_files):
+            path = selected_files[0]
+            stats.files_scanned += 1
+            stats.sheets_scanned += 1
+            stats.raw_records += 1
+            stats.work_order_records += 1
+            yield sync.RawSourceRecord(
+                source_file=path.as_posix(), sheet_name="Test", source_row_no=2,
+                business_key="WO-1", source_key="ERP5:WO-1", row_hash="hash",
+                field_values={}, source_table=None, field_definitions={},
+            ), {"sourceKey": "ERP-EXCEL:WO-1", "workOrderNo": "WO-1", "batchNo": "B-1"}
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "daily"
+            source.mkdir()
+            path = source / "生产指示资料.xls"
+            path.write_bytes(b"workbook")
+            config = {"skip_initialization": True, "incremental_directory": str(source)}
+            with patch.object(sync, "state_path", return_value=root / "state.json"), \
+                    patch.object(sync, "iter_all_source_records", side_effect=records), \
+                    patch.object(sync, "QmsDatabaseClient", Client):
+                sync.save_state({sync.SOURCE_IDENTITY_VERSION_STATE_KEY: "5"})
+                summary = sync.synchronize_database_directory(config, False, lambda _: None)
+                state = sync.load_state()
+            self.assertIn(sync.source_file_state_key("incremental", source, path), state)
+        self.assertEqual(["work_order", "work_order", "batch"], writes)
+        self.assertEqual([(0, 1), (1, 0)], [(c.commits, c.rollbacks) for c in connections])
+        self.assertEqual((1, 1, 1), (summary.source_files, summary.raw_records, summary.work_orders))
+        self.assertEqual(1, summary.work_orders_written)
+
     def test_legacy_recovery_replays_files_after_interruption_without_clearing(self):
         class Connection:
             def cursor(self):

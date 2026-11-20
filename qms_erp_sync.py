@@ -2827,72 +2827,81 @@ def synchronize_database_directory(
                 continue
 
             assert client is not None
-            connection = client._connect()
-            deleted_for_file, deleted_keys, deactivated_for_file = 0, [], 0
-            legacy_deactivated = snapshot_deactivated = 0
-            try:
+            file_counts = (added, updated, unchanged, written_raw, written_work_orders)
+            file_stats = replace(stats)
+            for attempt in range(3):
+                connection = client._connect()
+                deleted_for_file, deleted_keys, deactivated_for_file = 0, [], 0
+                legacy_deactivated = snapshot_deactivated = 0
                 try:
-                    with connection.cursor() as cursor:
-                        file_state, membership = ({}, {}) if older_complete else process_file(group, path, cursor)
-                        if source_file_checkpoint(path) != checkpoint:
-                            raise SyncError(f"源文件处理期间发生覆盖：{relative_file}；请重试。")
-                        if older_complete or not file_state:
-                            callback(
-                                f"跳过{'较早的完整清单' if older_complete else '没有有效数据的 Excel'}："
-                                f"{relative_file}；{'以最新文件为准' if older_complete else '保留已有记录'}。"
-                            )
-                            membership = parse_file_membership(
-                                next_state.get(file_membership_state_key(file_key), "")
-                            )
-                        else:
-                            if legacy_recovery:
-                                legacy_tables = set(membership["raw"])
-                                if UNCLASSIFIED_SOURCE_TABLE in client._existing_source_tables(cursor):
-                                    # Earlier builds stored newly classified exports here.
-                                    legacy_tables.add(UNCLASSIFIED_SOURCE_TABLE)
-                                for table_name in legacy_tables:
-                                    legacy_deactivated += client._deactivate_legacy_rows_for_file(
-                                        cursor, table_name, path.resolve().as_posix(), relative_file,
-                                    )
-                                if complete_table:
-                                    legacy_deactivated += client._deactivate_legacy_rows_for_complete_export(
-                                        cursor, complete_table,
-                                    )
-                            if complete_table:
-                                if legacy_recovery:
-                                    snapshot_deactivated, deleted_keys = client._deactivate_missing_snapshot_rows(
-                                        cursor, complete_table, membership["raw"].get(complete_table, []),
-                                    )
-                                else:
-                                    deleted_for_file, deleted_keys = client._delete_missing_snapshot_rows(
-                                        cursor, complete_table, membership["raw"].get(complete_table, []),
-                                    )
-                            removed = removed_file_membership(next_state, file_key, membership)
-                            for table_name in COMPLETE_EXPORT_TABLES | PARTIAL_EXPORT_TABLES:
-                                removed["raw"].pop(table_name, None)
-                            deactivated_for_file = (
-                                client._deactivate_removed_file_records(cursor, removed)
-                                if any(removed["raw"].values()) or removed["work_orders"] or removed["batches"]
-                                else 0
-                            )
-                    connection.commit()
-                except Exception as exc:
                     try:
-                        connection.rollback()
+                        with connection.cursor() as cursor:
+                            file_state, membership = ({}, {}) if older_complete else process_file(group, path, cursor)
+                            if source_file_checkpoint(path) != checkpoint:
+                                raise SyncError(f"源文件处理期间发生覆盖：{relative_file}；请重试。")
+                            if older_complete or not file_state:
+                                callback(
+                                    f"跳过{'较早的完整清单' if older_complete else '没有有效数据的 Excel'}："
+                                    f"{relative_file}；{'以最新文件为准' if older_complete else '保留已有记录'}。"
+                                )
+                                membership = parse_file_membership(
+                                    next_state.get(file_membership_state_key(file_key), "")
+                                )
+                            else:
+                                if legacy_recovery:
+                                    legacy_tables = set(membership["raw"])
+                                    if UNCLASSIFIED_SOURCE_TABLE in client._existing_source_tables(cursor):
+                                        # Earlier builds stored newly classified exports here.
+                                        legacy_tables.add(UNCLASSIFIED_SOURCE_TABLE)
+                                    for table_name in legacy_tables:
+                                        legacy_deactivated += client._deactivate_legacy_rows_for_file(
+                                            cursor, table_name, path.resolve().as_posix(), relative_file,
+                                        )
+                                    if complete_table:
+                                        legacy_deactivated += client._deactivate_legacy_rows_for_complete_export(
+                                            cursor, complete_table,
+                                        )
+                                if complete_table:
+                                    if legacy_recovery:
+                                        snapshot_deactivated, deleted_keys = client._deactivate_missing_snapshot_rows(
+                                            cursor, complete_table, membership["raw"].get(complete_table, []),
+                                        )
+                                    else:
+                                        deleted_for_file, deleted_keys = client._delete_missing_snapshot_rows(
+                                            cursor, complete_table, membership["raw"].get(complete_table, []),
+                                        )
+                                removed = removed_file_membership(next_state, file_key, membership)
+                                for table_name in COMPLETE_EXPORT_TABLES | PARTIAL_EXPORT_TABLES:
+                                    removed["raw"].pop(table_name, None)
+                                deactivated_for_file = (
+                                    client._deactivate_removed_file_records(cursor, removed)
+                                    if any(removed["raw"].values()) or removed["work_orders"] or removed["batches"]
+                                    else 0
+                                )
+                        connection.commit()
+                    except Exception as exc:
+                        try:
+                            connection.rollback()
+                        except Exception:
+                            # A disconnected MySQL socket cannot be rolled back locally.
+                            pass
+                        if isinstance(exc, MySQLError) and exc.args and exc.args[0] == 1213 and attempt < 2:
+                            added, updated, unchanged, written_raw, written_work_orders = file_counts
+                            stats = replace(file_stats)
+                            callback(f"{relative_file} 遇到数据库死锁，已回滚；重新处理当前文件（第 {attempt + 2}/3 次）。")
+                            continue
+                        if isinstance(exc, MySQLError):
+                            raise SyncError(
+                                f"处理 {relative_file} 时数据库连接中断或写入失败；"
+                                f"已完成文件保留进度，下次重试当前文件。原始错误：{exc}"
+                            ) from exc
+                        raise
+                finally:
+                    try:
+                        connection.close()
                     except Exception:
-                        # A disconnected MySQL socket cannot be rolled back locally.
                         pass
-                    if isinstance(exc, MySQLError):
-                        raise SyncError(
-                            f"处理 {relative_file} 时数据库连接中断或写入失败；"
-                            f"已完成文件保留进度，下次重试当前文件。原始错误：{exc}"
-                        ) from exc
-                    raise
-            finally:
-                try:
-                    connection.close()
-                except Exception:
-                    pass
+                break
             file_state[file_key] = checkpoint
             file_state[SOURCE_IDENTITY_VERSION_STATE_KEY] = "5"
             if legacy_recovery:

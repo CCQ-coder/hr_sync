@@ -351,6 +351,24 @@ class ErpFieldRegistryTests(unittest.TestCase):
                 with self.assertRaisesRegex(sync.SyncError, "字段注册表"):
                     registry.resolve("qms_purchase_order", file_name, sheet, source, unique, index)
 
+    def test_customer_part_export_accepts_reviewed_trailing_internal_column(self):
+        registry = sync.load_erp_field_registry(REGISTRY_PATH)
+        headers = [
+            field.excel_source_header for field in registry.fields
+            if field.table_name == "qms_customer_part" and field.column_index <= 35
+        ]
+        schema = sync.resolve_source_schema(
+            registry, "客户料号资料.xls", "Test", headers + ["lp_ch_bj"],
+            map_work_orders=False,
+        )
+        self.assertEqual("qms_customer_part", schema.target_table)
+        self.assertEqual("erp_lp_ch_bj", schema.definitions[-1].database_column)
+        with self.assertRaisesRegex(sync.SyncError, "字段注册表"):
+            sync.resolve_source_schema(
+                registry, "客户料号资料.xls", "Test", headers + ["unreviewed"],
+                map_work_orders=False,
+            )
+
     def test_loader_rejects_unsafe_names_tables_collisions_and_inconsistent_comments(self):
         field = {
             "table_name": "qms_purchase_order", "source_file": "采购订单资料.xls.xls",
