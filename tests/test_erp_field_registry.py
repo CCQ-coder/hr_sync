@@ -351,18 +351,19 @@ class ErpFieldRegistryTests(unittest.TestCase):
                 with self.assertRaisesRegex(sync.SyncError, "字段注册表"):
                     registry.resolve("qms_purchase_order", file_name, sheet, source, unique, index)
 
-    def test_customer_part_export_accepts_reviewed_trailing_internal_column(self):
+    def test_customer_part_export_accepts_reviewed_trailing_internal_columns(self):
         registry = sync.load_erp_field_registry(REGISTRY_PATH)
         headers = [
             field.excel_source_header for field in registry.fields
             if field.table_name == "qms_customer_part" and field.column_index <= 35
         ]
         schema = sync.resolve_source_schema(
-            registry, "客户料号资料.xls", "Test", headers + ["lp_ch_bj"],
+            registry, "客户料号资料.xls", "Test", headers + ["lp_ch_bj", "lp_k_bj"],
             map_work_orders=False,
         )
         self.assertEqual("qms_customer_part", schema.target_table)
-        self.assertEqual("erp_lp_ch_bj", schema.definitions[-1].database_column)
+        self.assertEqual("erp_lp_ch_bj", schema.definitions[-2].database_column)
+        self.assertEqual("erp_lp_k_bj", schema.definitions[-1].database_column)
         with self.assertRaisesRegex(sync.SyncError, "字段注册表"):
             sync.resolve_source_schema(
                 registry, "客户料号资料.xls", "Test", headers + ["unreviewed"],

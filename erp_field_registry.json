@@ -4402,6 +4402,17 @@
       "column_index": 36
     },
     {
+      "table_name": "qms_customer_part",
+      "source_file": "客户料号资料.xls.xls",
+      "sheet_name": "Test",
+      "excel_source_header": "lp_k_bj",
+      "excel_unique_header": "lp_k_bj",
+      "database_column": "erp_lp_k_bj",
+      "legacy_database_column": "erp_lp_k_bj",
+      "column_comment": "Excel列名：lp_k_bj",
+      "column_index": 37
+    },
+    {
       "table_name": "qms_customer_order",
       "source_file": "客户订单资料.XLS.XLS",
       "sheet_name": "Test",
